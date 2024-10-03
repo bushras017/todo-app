@@ -66,6 +66,40 @@ pipeline {
             }
         }
 
+        stage('SCM Checkout') {
+            steps{
+           git branch: 'develop', url: 'https://github.com/bushras017/django-todo.git'
+            }
+        }
+        
+        stage('Run Sonarqube') {
+            environment {
+                scannerHome = tool 'SonarScanner'
+            }
+            steps {
+                withSonarQubeEnv(credentialsId: 'sonar-token', installationName: 'SonarScanner') {
+                    sh "${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=django-todo -Dsonar.sources=."
+                }
+            }
+        }
+        
+        stage('OWASP Dependency-Check Vulnerabilities') {
+            steps {
+                dependencyCheck additionalArguments: '''
+                    -o './'
+                    -s './'
+                    -f 'ALL'
+                    --prettyPrint
+                ''', 
+                odcInstallation: '10.0.4',
+                nvdCredentialsId: 'NVD_API_KEY'
+                
+                dependencyCheckPublisher pattern: 'dependency-check-report.xml'
+            }
+        }
+
+
+
         stage('Run DAST') {
             steps {
                 script {
@@ -128,7 +162,6 @@ pipeline {
                         }
                     }
                     
-                    
                     echo "High Risk Alerts found: ${highAlerts}"
                     
                     // Convert both values to integers before comparison
@@ -145,7 +178,7 @@ pipeline {
 
     post {
         always {
-            archiveArtifacts artifacts: 'zap-report.html,zap-report.json', fingerprint: true
+            archiveArtifacts artifacts: 'zap-report.html,zap-report.json,dependency-check-report.xml', fingerprint: true
             
             script {
                 try {
