@@ -78,7 +78,7 @@ pipeline {
             }
             steps {
                 withSonarQubeEnv(credentialsId: 'sonar-token', installationName: 'SonarScanner') {
-                    sh "${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=django-todo -Dsonar.sources=."
+                    sh "${scannerHome}/bin/sonar-scanner"
                 }
             }
         }
