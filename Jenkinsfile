@@ -66,11 +66,6 @@ pipeline {
             }
         }
 
-        stage('SCM Checkout') {
-            steps{
-           git branch: 'develop', url: 'https://github.com/bushras017/django-todo.git'
-            }
-        }
         
         stage('Run Sonarqube') {
             environment {
