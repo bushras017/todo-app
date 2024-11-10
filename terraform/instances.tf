@@ -15,6 +15,20 @@ resource "google_compute_instance" "db_server" {
     subnetwork = google_compute_subnetwork.subnet.id
   }
 
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      metadata,
+      metadata_startup_script,
+      attached_disk,
+      boot_disk,
+      network_interface,
+      scheduling,
+      service_account,
+      shielded_instance_config,
+      tags
+    ]
+  }
   # Simple metadata startup script
   metadata_startup_script = <<EOF
 #!/bin/bash
@@ -70,6 +84,21 @@ resource "google_compute_instance" "web_server" {
   network_interface {
     subnetwork = google_compute_subnetwork.subnet.id
     access_config {}
+  }
+  
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      metadata,
+      metadata_startup_script,
+      attached_disk,
+      boot_disk,
+      network_interface,
+      scheduling,
+      service_account,
+      shielded_instance_config,
+      tags
+    ]
   }
 
   metadata = {

@@ -68,8 +68,86 @@ jobs:
       working-directory: ./terraform
       run: terraform init
 
-    # Import all existing resources
-    - name: Import Existing Resources
+    - name: Clean and Reset Terraform State
+      working-directory: ./terraform
+      run: |
+        # Remove existing state
+        terraform state rm google_compute_network.vpc || true
+        terraform state rm google_compute_subnetwork.subnet || true
+        terraform state rm google_compute_firewall.allow_monitoring || true
+        terraform state rm google_compute_firewall.allow_django || true
+        terraform state rm google_compute_firewall.allow_internal || true
+        terraform state rm google_compute_firewall.blocked_ips || true
+        terraform state rm google_compute_instance.db_server || true
+        terraform state rm google_compute_instance.web_server || true
+        terraform state rm google_bigquery_dataset.security_logs || true
+        terraform state rm google_pubsub_topic.prometheus_alerts || true
+        terraform state rm google_storage_bucket.function_bucket || true
+        terraform state rm google_cloudfunctions_function.alert_handler || true
+        
+        # Now import resources
+        echo "Importing VPC..."
+        terraform import google_compute_network.vpc \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/networks/devsecops-vpc"
+        
+        echo "Importing subnet..."
+        terraform import google_compute_subnetwork.subnet \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/regions/${{ env.REGION }}/subnetworks/devsecops-subnet"
+        
+        echo "Importing firewall rules..."
+        terraform import google_compute_firewall.allow_monitoring \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-monitoring"
+        
+        terraform import google_compute_firewall.allow_django \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-django"
+        
+        terraform import google_compute_firewall.allow_internal \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-internal"
+        
+        terraform import google_compute_firewall.blocked_ips \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/blocked-ips"
+        
+        echo "Importing compute instances..."
+        terraform import google_compute_instance.db_server \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/db-server"
+        
+        terraform import google_compute_instance.web_server \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/web-server"
+        
+        echo "Importing BigQuery dataset..."
+        terraform import google_bigquery_dataset.security_logs \
+          "${{ secrets.GCP_PROJECT_ID }}:security_logs"
+        
+        echo "Importing Pub/Sub topic..."
+        terraform import google_pubsub_topic.prometheus_alerts \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/topics/prometheus-alerts"
+        
+        echo "Importing storage bucket..."
+        terraform import google_storage_bucket.function_bucket \
+          "${{ secrets.GCP_PROJECT_ID }}-functions"
+        
+        echo "Importing cloud function..."
+        terraform import google_cloudfunctions_function.alert_handler \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/locations/${{ env.REGION }}/functions/alert-handler"
+        
+        # Show the current state
+        echo "Current Terraform State:"
+        terraform state list
+
+    - name: Terraform Plan
+      if: github.event_name == 'pull_request'
+      working-directory: ./terraform
+      run: terraform plan
+
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        cd terraform
+        terraform plan -out=tfplan
+        terraform show tfplan
+        terraform apply tfplan
+
+   - name: Import Existing Resources
       working-directory: ./terraform
       run: |
         # Network resources
@@ -92,6 +170,13 @@ jobs:
         terraform import google_compute_firewall.blocked_ips \
           "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/blocked-ips" || true
         
+        # Compute Instances
+        terraform import google_compute_instance.db_server \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/db-server" || true
+        
+        terraform import google_compute_instance.web_server \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/web-server" || true
+        
         # BigQuery Dataset
         terraform import google_bigquery_dataset.security_logs \
           "${{ secrets.GCP_PROJECT_ID }}:security_logs" || true
@@ -103,8 +188,10 @@ jobs:
         # Storage Bucket
         terraform import google_storage_bucket.function_bucket \
           "${{ secrets.GCP_PROJECT_ID }}-functions" || true
-
-    - name: Prepare Cloud Function
+        
+        # Cloud Function
+        terraform import google_cloudfunctions_function.alert_handler \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/locations/${{ env.REGION }}/functions/alert-handler" || true    - name: Prepare Cloud Function
       run: |
         if [ -d "cloud_function" ]; then
           cd cloud_function

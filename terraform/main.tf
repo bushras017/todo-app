@@ -11,6 +11,11 @@ resource "google_compute_network" "vpc" {
   auto_create_subnetworks = false
   lifecycle {
     prevent_destroy = true
+    ignore_changes = [
+      auto_create_subnetworks,
+      description,
+      routing_mode
+    ]
   }
 }
 
@@ -27,7 +32,12 @@ resource "google_compute_subnetwork" "subnet" {
   }
     lifecycle {
     prevent_destroy = true
-  }
+    ignore_changes = [
+      description,
+      private_ip_google_access,
+      log_config
+    ]
+    }
 }
 
 # Firewall rules
@@ -44,6 +54,12 @@ resource "google_compute_firewall" "allow_monitoring" {
   target_tags   = ["web-server", "db-server"]
     lifecycle {
     prevent_destroy = true
+    ignore_changes = [
+      description,
+      priority,
+      source_ranges,
+      target_tags
+    ]
   }
 }
 
@@ -61,6 +77,12 @@ resource "google_compute_firewall" "allow_django" {
 
     lifecycle {
     prevent_destroy = true
+    ignore_changes = [
+      description,
+      priority,
+      source_ranges,
+      target_tags
+    ]
   }
 }
 
@@ -77,6 +99,12 @@ resource "google_compute_firewall" "allow_internal" {
   target_tags = ["db-server"]
     lifecycle {
     prevent_destroy = true
+    ignore_changes = [
+      description,
+      priority,
+      source_tags,
+      target_tags
+    ]
   }
 }
 
@@ -92,5 +120,12 @@ resource "google_compute_firewall" "blocked_ips" {
   priority      = 1000
     lifecycle {
     prevent_destroy = true
+    ignore_changes = [
+      description,
+      priority,
+      source_ranges,
+      target_tags,
+      deny
+    ]
   }
 }

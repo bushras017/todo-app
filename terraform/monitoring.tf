@@ -27,7 +27,15 @@ resource "google_bigquery_dataset" "security_logs" {
 resource "google_bigquery_table" "alerts" {
   dataset_id = google_bigquery_dataset.security_logs.dataset_id
   table_id   = "alerts"
-
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      schema,
+      description,
+      labels,
+      time_partitioning
+    ]
+  }
   time_partitioning {
     type = "DAY"
   }
@@ -66,8 +74,12 @@ EOF
 # PubSub topic for alerts
 resource "google_pubsub_topic" "prometheus_alerts" {
   name = "prometheus-alerts"
-    lifecycle {
+  lifecycle {
     prevent_destroy = true
+    ignore_changes = [
+      labels,
+      message_retention_duration
+    ]
   }
 }
 
@@ -76,8 +88,14 @@ resource "google_storage_bucket" "function_bucket" {
   name     = "${var.project_id}-functions"
   location = var.region
   uniform_bucket_level_access = true
-    lifecycle {
+  lifecycle {
     prevent_destroy = true
+    ignore_changes = [
+      labels,
+      force_destroy,
+      uniform_bucket_level_access,
+      versioning
+    ]
   }
 }
 
@@ -85,6 +103,13 @@ resource "google_storage_bucket_object" "function_archive" {
   name   = "function-${timestamp()}.zip"
   bucket = google_storage_bucket.function_bucket.name
   source = "${path.module}/function.zip"
+  lifecycle {
+    prevent_destroy = false  # Allow updates for function deployments
+    ignore_changes = [
+      detect_md5hash,
+      metadata
+    ]
+  }
 }
 
 # Added IAM binding for function service account
@@ -92,6 +117,12 @@ resource "google_project_iam_binding" "function_invoker" {
   project = var.project_id
   role    = "roles/cloudfunctions.invoker"
   members = ["serviceAccount:${var.service_account_email}"]
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      members
+    ]
+  }
 }
 
 resource "google_cloudfunctions_function" "alert_handler" {
@@ -114,6 +145,21 @@ resource "google_cloudfunctions_function" "alert_handler" {
 
   # Add service account
   service_account_email = var.service_account_email
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      available_memory_mb,
+      description,
+      environment_variables,
+      labels,
+      max_instances,
+      runtime,
+      service_account_email,
+      source_archive_bucket,
+      source_archive_object,
+      timeout
+    ]
+  }
 }
 
 # Log sink with explicit permission
@@ -140,6 +186,14 @@ resource "google_logging_project_sink" "security_sink" {
   bigquery_options {
     use_partitioned_tables = true
   }
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      description,
+      filter,
+      exclusions
+    ]
+  }
 }
 
 # Add IAM binding for the log sink service account
@@ -147,4 +201,10 @@ resource "google_project_iam_binding" "log_sink_writer" {
   project = var.project_id
   role    = "roles/bigquery.dataEditor"
   members = [google_logging_project_sink.security_sink.writer_identity]
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      members
+    ]
+  }
 }
