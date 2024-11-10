@@ -31,7 +31,7 @@ resource "google_compute_firewall" "allow_monitoring" {
 
   allow {
     protocol = "tcp"
-    ports    = ["9090", "9093", "9100", "9187"]  # Prometheus, Alertmanager, Node Exporter, Postgres Exporter
+    ports    = ["9090", "9093", "9100", "9187"]
   }
 
   source_ranges = ["0.0.0.0/0"]
@@ -57,9 +57,21 @@ resource "google_compute_firewall" "allow_internal" {
 
   allow {
     protocol = "tcp"
-    ports    = ["5432"]  # PostgreSQL
+    ports    = ["5432"]
   }
 
   source_tags = ["web-server"]
   target_tags = ["db-server"]
+}
+
+# Firewall rule for blocked IPs
+resource "google_compute_firewall" "blocked_ips" {
+  name    = "blocked-ips"
+  network = google_compute_network.vpc.name
+  deny {
+    protocol = "all"
+  }
+  source_ranges = []  # Will be updated by Cloud Function
+  target_tags   = ["web-server", "db-server"]
+  priority      = 1000
 }

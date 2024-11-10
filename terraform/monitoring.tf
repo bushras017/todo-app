@@ -53,6 +53,11 @@ resource "google_bigquery_table" "alerts" {
 EOF
 }
 
+# PubSub topic for alerts
+resource "google_pubsub_topic" "prometheus_alerts" {
+  name = "prometheus-alerts"
+}
+
 # Cloud Function
 resource "google_storage_bucket" "function_bucket" {
   name     = "${var.project_id}-functions"
@@ -82,11 +87,6 @@ resource "google_cloudfunctions_function" "alert_handler" {
   environment_variables = {
     PROJECT_ID = var.project_id
   }
-}
-
-# PubSub topic for alerts
-resource "google_pubsub_topic" "prometheus_alerts" {
-  name = "prometheus-alerts"
 }
 
 # Log sink

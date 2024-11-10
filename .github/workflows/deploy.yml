@@ -41,11 +41,17 @@ jobs:
         alert_email_recipients = ${{ secrets.ALERT_EMAILS }}
         EOF
 
-    - name: Setup Cloud Function
+    - name: Prepare Cloud Function
       run: |
-        cd cloud_function
-        zip -r function.zip ./*
-        mv function.zip ../terraform/
+        if [ -d "cloud_function" ]; then
+          cd cloud_function
+          zip -r ../terraform/function.zip ./*
+        else
+          echo "Cloud function directory not found. Creating empty function.zip"
+          touch empty.txt
+          zip terraform/function.zip empty.txt
+          rm empty.txt
+        fi
 
     - name: Terraform Init
       working-directory: ./terraform
