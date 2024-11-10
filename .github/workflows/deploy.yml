@@ -33,7 +33,6 @@ jobs:
         SA_EMAIL=$(echo '${{ secrets.GCP_SA_KEY }}' | jq -r '.client_email')
         echo "SA_EMAIL=$SA_EMAIL" >> $GITHUB_ENV
 
-    # Add Storage Admin role for function deployment
     - name: Setup Additional IAM Permissions
       run: |
         gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
@@ -68,7 +67,7 @@ jobs:
       working-directory: ./terraform
       run: terraform init
 
-    - name: Clean and Reset Terraform State
+    - name: Clean and Import Resources
       working-directory: ./terraform
       run: |
         # Remove existing state
@@ -85,79 +84,16 @@ jobs:
         terraform state rm google_storage_bucket.function_bucket || true
         terraform state rm google_cloudfunctions_function.alert_handler || true
         
-        # Now import resources
+        # Import resources
         echo "Importing VPC..."
-        terraform import google_compute_network.vpc \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/networks/devsecops-vpc"
-        
-        echo "Importing subnet..."
-        terraform import google_compute_subnetwork.subnet \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/regions/${{ env.REGION }}/subnetworks/devsecops-subnet"
-        
-        echo "Importing firewall rules..."
-        terraform import google_compute_firewall.allow_monitoring \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-monitoring"
-        
-        terraform import google_compute_firewall.allow_django \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-django"
-        
-        terraform import google_compute_firewall.allow_internal \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-internal"
-        
-        terraform import google_compute_firewall.blocked_ips \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/blocked-ips"
-        
-        echo "Importing compute instances..."
-        terraform import google_compute_instance.db_server \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/db-server"
-        
-        terraform import google_compute_instance.web_server \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/web-server"
-        
-        echo "Importing BigQuery dataset..."
-        terraform import google_bigquery_dataset.security_logs \
-          "${{ secrets.GCP_PROJECT_ID }}:security_logs"
-        
-        echo "Importing Pub/Sub topic..."
-        terraform import google_pubsub_topic.prometheus_alerts \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/topics/prometheus-alerts"
-        
-        echo "Importing storage bucket..."
-        terraform import google_storage_bucket.function_bucket \
-          "${{ secrets.GCP_PROJECT_ID }}-functions"
-        
-        echo "Importing cloud function..."
-        terraform import google_cloudfunctions_function.alert_handler \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/locations/${{ env.REGION }}/functions/alert-handler"
-        
-        # Show the current state
-        echo "Current Terraform State:"
-        terraform state list
-
-    - name: Terraform Plan
-      if: github.event_name == 'pull_request'
-      working-directory: ./terraform
-      run: terraform plan
-
-    - name: Terraform Apply
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      run: |
-        cd terraform
-        terraform plan -out=tfplan
-        terraform show tfplan
-        terraform apply tfplan
-
-   - name: Import Existing Resources
-      working-directory: ./terraform
-      run: |
-        # Network resources
         terraform import google_compute_network.vpc \
           "projects/${{ secrets.GCP_PROJECT_ID }}/global/networks/devsecops-vpc" || true
         
+        echo "Importing subnet..."
         terraform import google_compute_subnetwork.subnet \
           "projects/${{ secrets.GCP_PROJECT_ID }}/regions/${{ env.REGION }}/subnetworks/devsecops-subnet" || true
         
-        # Firewall rules
+        echo "Importing firewall rules..."
         terraform import google_compute_firewall.allow_monitoring \
           "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-monitoring" || true
         
@@ -170,28 +106,39 @@ jobs:
         terraform import google_compute_firewall.blocked_ips \
           "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/blocked-ips" || true
         
-        # Compute Instances
+        echo "Importing compute instances..."
         terraform import google_compute_instance.db_server \
           "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/db-server" || true
         
         terraform import google_compute_instance.web_server \
           "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/web-server" || true
         
-        # BigQuery Dataset
+        echo "Importing BigQuery dataset..."
         terraform import google_bigquery_dataset.security_logs \
           "${{ secrets.GCP_PROJECT_ID }}:security_logs" || true
         
-        # Pub/Sub Topic
+        echo "Importing Pub/Sub topic..."
         terraform import google_pubsub_topic.prometheus_alerts \
           "projects/${{ secrets.GCP_PROJECT_ID }}/topics/prometheus-alerts" || true
         
-        # Storage Bucket
+        echo "Importing storage bucket..."
         terraform import google_storage_bucket.function_bucket \
           "${{ secrets.GCP_PROJECT_ID }}-functions" || true
         
-        # Cloud Function
+        echo "Importing cloud function..."
         terraform import google_cloudfunctions_function.alert_handler \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/locations/${{ env.REGION }}/functions/alert-handler" || true    - name: Prepare Cloud Function
+          "projects/${{ secrets.GCP_PROJECT_ID }}/locations/${{ env.REGION }}/functions/alert-handler" || true
+        
+        # Show the current state
+        echo "Current Terraform State:"
+        terraform state list
+
+    - name: Terraform Plan
+      if: github.event_name == 'pull_request'
+      working-directory: ./terraform
+      run: terraform plan
+
+    - name: Prepare Cloud Function
       run: |
         if [ -d "cloud_function" ]; then
           cd cloud_function
@@ -246,6 +193,6 @@ jobs:
           source venv/bin/activate && \
           pip install -r requirements.txt && \
           python manage.py migrate && \
-          python manage.py collectstatic --noinup && \
+          python manage.py collectstatic --noinput && \
           pkill -f runserver || true && \
           nohup python manage.py runserver 0.0.0.0:8000 > /var/log/django.log 2>&1 &"
