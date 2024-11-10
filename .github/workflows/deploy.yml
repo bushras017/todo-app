@@ -33,45 +33,24 @@ jobs:
         SA_EMAIL=$(echo '${{ secrets.GCP_SA_KEY }}' | jq -r '.client_email')
         echo "SA_EMAIL=$SA_EMAIL" >> $GITHUB_ENV
 
-    # Enable required APIs
     - name: Enable Required APIs
       run: |
-        # Enable Cloud Resource Manager API
         gcloud services enable cloudresourcemanager.googleapis.com
-        
-        # Enable IAM API
         gcloud services enable iam.googleapis.com
-        
-        # Enable Cloud Functions API
         gcloud services enable cloudfunctions.googleapis.com
-        
-        # Enable Cloud Build API
         gcloud services enable cloudbuild.googleapis.com
-        
-        # Enable BigQuery API
         gcloud services enable bigquery.googleapis.com
-        
-        # Enable Cloud Logging API
         gcloud services enable logging.googleapis.com
-        
-        # Enable Compute Engine API
         gcloud services enable compute.googleapis.com
-        
-        # Enable Cloud Pub/Sub API
         gcloud services enable pubsub.googleapis.com
-        
-        # Wait for APIs to be fully enabled
         sleep 30
 
-    # Add required IAM roles
     - name: Setup IAM Permissions
       run: |
-        # Add BigQuery Data Editor role
         gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
           --member="serviceAccount:${{ env.SA_EMAIL }}" \
           --role="roles/bigquery.dataEditor"
         
-        # Add Logging Config Writer role
         gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
           --member="serviceAccount:${{ env.SA_EMAIL }}" \
           --role="roles/logging.configWriter"
@@ -92,6 +71,30 @@ jobs:
         service_account_email = "${{ env.SA_EMAIL }}"
         EOF
 
+    - name: Terraform Init
+      working-directory: ./terraform
+      run: terraform init
+
+    # Import existing resources
+    - name: Import Existing Resources
+      working-directory: ./terraform
+      run: |
+        # Import VPC Network
+        terraform import google_compute_network.vpc \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/networks/devsecops-vpc" || true
+        
+        # Import BigQuery Dataset
+        terraform import google_bigquery_dataset.security_logs \
+          "${{ secrets.GCP_PROJECT_ID }}:security_logs" || true
+        
+        # Import Pub/Sub Topic
+        terraform import google_pubsub_topic.prometheus_alerts \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/topics/prometheus-alerts" || true
+        
+        # Import Storage Bucket
+        terraform import google_storage_bucket.function_bucket \
+          "${{ secrets.GCP_PROJECT_ID }}-functions" || true
+
     - name: Prepare Cloud Function
       run: |
         if [ -d "cloud_function" ]; then
@@ -104,10 +107,6 @@ jobs:
           rm empty.txt
         fi
 
-    - name: Terraform Init
-      working-directory: ./terraform
-      run: terraform init
-
     - name: Terraform Plan
       if: github.event_name == 'pull_request'
       working-directory: ./terraform
@@ -115,8 +114,15 @@ jobs:
 
     - name: Terraform Apply
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      working-directory: ./terraform
-      run: terraform apply -auto-approve
+      run: |
+        cd terraform
+        # Try regular apply first
+        if ! terraform apply -auto-approve; then
+          # If apply fails, try with refresh-only first
+          terraform apply -refresh-only -auto-approve
+          # Then try regular apply again
+          terraform apply -auto-approve
+        fi
 
     - name: Deploy Django App
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'

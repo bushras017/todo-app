@@ -9,6 +9,9 @@ provider "google" {
 resource "google_compute_network" "vpc" {
   name                    = "devsecops-vpc"
   auto_create_subnetworks = false
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "google_compute_subnetwork" "subnet" {

@@ -18,6 +18,9 @@ resource "google_bigquery_dataset" "security_logs" {
     role          = "WRITER"
     user_by_email = var.service_account_email  # Add this variable
   }
+    lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # BigQuery table for alerts
@@ -63,6 +66,9 @@ EOF
 # PubSub topic for alerts
 resource "google_pubsub_topic" "prometheus_alerts" {
   name = "prometheus-alerts"
+    lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Cloud Function
@@ -70,6 +76,9 @@ resource "google_storage_bucket" "function_bucket" {
   name     = "${var.project_id}-functions"
   location = var.region
   uniform_bucket_level_access = true
+    lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "google_storage_bucket_object" "function_archive" {
