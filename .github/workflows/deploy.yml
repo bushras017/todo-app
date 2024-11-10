@@ -1,0 +1,95 @@
+# .github/workflows/deploy.yml
+name: Deploy Infrastructure
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: us-central1
+  ZONE: us-central1-a
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Auth to GCP
+      uses: google-github-actions/auth@v0
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v1
+
+    - name: Create terraform.tfvars
+      run: |
+        cat > terraform/terraform.tfvars << EOF
+        project_id = "${{ secrets.GCP_PROJECT_ID }}"
+        region = "${{ env.REGION }}"
+        zone = "${{ env.ZONE }}"
+        db_password = "${{ secrets.DB_PASSWORD }}"
+        notification_email = "${{ secrets.NOTIFICATION_EMAIL }}"
+        notification_email_password = "${{ secrets.EMAIL_APP_PASSWORD }}"
+        alert_email_recipients = ${{ secrets.ALERT_EMAILS }}
+        EOF
+
+    - name: Setup Cloud Function
+      run: |
+        cd cloud_function
+        zip -r function.zip ./*
+        mv function.zip ../terraform/
+
+    - name: Terraform Init
+      working-directory: ./terraform
+      run: terraform init
+
+    - name: Terraform Plan
+      if: github.event_name == 'pull_request'
+      working-directory: ./terraform
+      run: terraform plan
+
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      working-directory: ./terraform
+      run: terraform apply -auto-approve
+
+    - name: Deploy Django App
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        # Get outputs
+        WEB_IP=$(terraform -chdir=terraform output -raw web_server_public_ip)
+        DB_IP=$(terraform -chdir=terraform output -raw db_server_private_ip)
+        
+        # Create Django environment file
+        cat > django_app/.env << EOF
+        DEBUG=False
+        DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+        DB_NAME=${{ secrets.DB_NAME }}
+        DB_USER=${{ secrets.DB_USER }}
+        DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+        DB_HOST=$DB_IP
+        DB_PORT=5432
+        ALLOWED_HOSTS=$WEB_IP,localhost,127.0.0.1
+        GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
+        EOF
+
+        # Copy Django app to web server
+        gcloud compute scp --recurse django_app/* web-server:/opt/django-app/
+        gcloud compute scp django_app/.env web-server:/opt/django-app/
+
+        # Setup and start Django
+        gcloud compute ssh web-server --command "
+          cd /opt/django-app && \
+          python3 -m venv venv && \
+          source venv/bin/activate && \
+          pip install -r requirements.txt && \
+          python manage.py migrate && \
+          python manage.py collectstatic --noinput && \
+          pkill -f runserver || true && \
+          nohup python manage.py runserver 0.0.0.0:8000 > /var/log/django.log 2>&1 &"

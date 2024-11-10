@@ -1,0 +1,4 @@
+# cloud_function/requirements.txt
+google-cloud-compute==2.0.0
+google-cloud-bigquery==2.0.0
+google-cloud-logging==2.0.0
