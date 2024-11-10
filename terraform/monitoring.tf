@@ -1,4 +1,5 @@
 # terraform/monitoring.tf
+
 # BigQuery dataset for logs
 resource "google_bigquery_dataset" "security_logs" {
   dataset_id                  = "security_logs"
@@ -10,6 +11,12 @@ resource "google_bigquery_dataset" "security_logs" {
   access {
     role          = "OWNER"
     special_group = "projectOwners"
+  }
+
+  # Add explicit access for the service account
+  access {
+    role          = "WRITER"
+    user_by_email = var.service_account_email  # Add this variable
   }
 }
 
@@ -62,12 +69,20 @@ resource "google_pubsub_topic" "prometheus_alerts" {
 resource "google_storage_bucket" "function_bucket" {
   name     = "${var.project_id}-functions"
   location = var.region
+  uniform_bucket_level_access = true
 }
 
 resource "google_storage_bucket_object" "function_archive" {
   name   = "function-${timestamp()}.zip"
   bucket = google_storage_bucket.function_bucket.name
   source = "${path.module}/function.zip"
+}
+
+# Added IAM binding for function service account
+resource "google_project_iam_binding" "function_invoker" {
+  project = var.project_id
+  role    = "roles/cloudfunctions.invoker"
+  members = ["serviceAccount:${var.service_account_email}"]
 }
 
 resource "google_cloudfunctions_function" "alert_handler" {
@@ -87,9 +102,12 @@ resource "google_cloudfunctions_function" "alert_handler" {
   environment_variables = {
     PROJECT_ID = var.project_id
   }
+
+  # Add service account
+  service_account_email = var.service_account_email
 }
 
-# Log sink
+# Log sink with explicit permission
 resource "google_logging_project_sink" "security_sink" {
   name        = "security-logs-sink"
   description = "Security logs export to BigQuery"
@@ -108,4 +126,16 @@ resource "google_logging_project_sink" "security_sink" {
   EOT
 
   unique_writer_identity = true
+
+  # Added BigQuery writer IAM binding
+  bigquery_options {
+    use_partitioned_tables = true
+  }
+}
+
+# Add IAM binding for the log sink service account
+resource "google_project_iam_binding" "log_sink_writer" {
+  project = var.project_id
+  role    = "roles/bigquery.dataEditor"
+  members = [google_logging_project_sink.security_sink.writer_identity]
 }

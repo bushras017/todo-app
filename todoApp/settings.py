@@ -57,6 +57,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'todos.middleware.SecurityMonitoringMiddleware',
 ]
 
 ROOT_URLCONF = 'todoApp.urls'
@@ -94,6 +95,32 @@ DATABASES = {
     }
 }
 
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'structured': {
+            'format': '{"timestamp":"%(asctime)s", "level":"%(levelname)s", "type":"django", "message":"%(message)s"}'
+        }
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'structured',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],  # Cloud Logging automatically captures stdout/stderr
+            'level': 'INFO',
+        },
+        'django.security': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    }
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/2.2/ref/settings/#auth-password-validators

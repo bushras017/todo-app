@@ -1,4 +1,3 @@
-# cloud_function/main.py
 import base64
 import json
 import os
@@ -106,12 +105,20 @@ class AlertHandler:
             current_ranges = set(firewall.source_ranges)
             current_ranges.add(f"{ip_to_block}/32")
             
-            firewall.source_ranges = list(current_ranges)
+            # Convert firewall to dict for update
+            firewall_dict = {
+                'name': firewall.name,
+                'sourceRanges': list(current_ranges),
+                'denied': [{'IPProtocol': 'all'}],
+                'direction': firewall.direction,
+                'priority': firewall.priority,
+                'targetTags': firewall.target_tags
+            }
             
-            self.compute_client.update(
+            operation = self.compute_client.patch(
                 project=self.project_id,
                 firewall='blocked-ips',
-                firewall_resource=firewall
+                firewall_resource=firewall_dict
             )
             
             self.logger.log_text(f"Blocked IP address: {ip_to_block}")
