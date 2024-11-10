@@ -33,20 +33,13 @@ jobs:
         SA_EMAIL=$(echo '${{ secrets.GCP_SA_KEY }}' | jq -r '.client_email')
         echo "SA_EMAIL=$SA_EMAIL" >> $GITHUB_ENV
 
-    - name: Enable Required APIs
+    # Add Storage Admin role for function deployment
+    - name: Setup Additional IAM Permissions
       run: |
-        gcloud services enable cloudresourcemanager.googleapis.com
-        gcloud services enable iam.googleapis.com
-        gcloud services enable cloudfunctions.googleapis.com
-        gcloud services enable cloudbuild.googleapis.com
-        gcloud services enable bigquery.googleapis.com
-        gcloud services enable logging.googleapis.com
-        gcloud services enable compute.googleapis.com
-        gcloud services enable pubsub.googleapis.com
-        sleep 30
+        gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
+          --member="serviceAccount:${{ env.SA_EMAIL }}" \
+          --role="roles/storage.admin"
 
-    - name: Setup IAM Permissions
-      run: |
         gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
           --member="serviceAccount:${{ env.SA_EMAIL }}" \
           --role="roles/bigquery.dataEditor"
@@ -75,23 +68,39 @@ jobs:
       working-directory: ./terraform
       run: terraform init
 
-    # Import existing resources
+    # Import all existing resources
     - name: Import Existing Resources
       working-directory: ./terraform
       run: |
-        # Import VPC Network
+        # Network resources
         terraform import google_compute_network.vpc \
           "projects/${{ secrets.GCP_PROJECT_ID }}/global/networks/devsecops-vpc" || true
         
-        # Import BigQuery Dataset
+        terraform import google_compute_subnetwork.subnet \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/regions/${{ env.REGION }}/subnetworks/devsecops-subnet" || true
+        
+        # Firewall rules
+        terraform import google_compute_firewall.allow_monitoring \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-monitoring" || true
+        
+        terraform import google_compute_firewall.allow_django \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-django" || true
+        
+        terraform import google_compute_firewall.allow_internal \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-internal" || true
+        
+        terraform import google_compute_firewall.blocked_ips \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/blocked-ips" || true
+        
+        # BigQuery Dataset
         terraform import google_bigquery_dataset.security_logs \
           "${{ secrets.GCP_PROJECT_ID }}:security_logs" || true
         
-        # Import Pub/Sub Topic
+        # Pub/Sub Topic
         terraform import google_pubsub_topic.prometheus_alerts \
           "projects/${{ secrets.GCP_PROJECT_ID }}/topics/prometheus-alerts" || true
         
-        # Import Storage Bucket
+        # Storage Bucket
         terraform import google_storage_bucket.function_bucket \
           "${{ secrets.GCP_PROJECT_ID }}-functions" || true
 
@@ -106,11 +115,6 @@ jobs:
           zip terraform/function.zip empty.txt
           rm empty.txt
         fi
-
-    - name: Terraform Plan
-      if: github.event_name == 'pull_request'
-      working-directory: ./terraform
-      run: terraform plan
 
     - name: Terraform Apply
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'

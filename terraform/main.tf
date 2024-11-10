@@ -25,6 +25,9 @@ resource "google_compute_subnetwork" "subnet" {
     flow_sampling       = 0.5
     metadata           = "INCLUDE_ALL_METADATA"
   }
+    lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Firewall rules
@@ -39,6 +42,9 @@ resource "google_compute_firewall" "allow_monitoring" {
 
   source_ranges = ["0.0.0.0/0"]
   target_tags   = ["web-server", "db-server"]
+    lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "google_compute_firewall" "allow_django" {
@@ -52,6 +58,10 @@ resource "google_compute_firewall" "allow_django" {
 
   source_ranges = ["0.0.0.0/0"]
   target_tags   = ["web-server"]
+
+    lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "google_compute_firewall" "allow_internal" {
@@ -65,6 +75,9 @@ resource "google_compute_firewall" "allow_internal" {
 
   source_tags = ["web-server"]
   target_tags = ["db-server"]
+    lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Firewall rule for blocked IPs
@@ -77,4 +90,7 @@ resource "google_compute_firewall" "blocked_ips" {
   source_ranges = []  # Will be updated by Cloud Function
   target_tags   = ["web-server", "db-server"]
   priority      = 1000
+    lifecycle {
+    prevent_destroy = true
+  }
 }
