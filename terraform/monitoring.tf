@@ -6,12 +6,11 @@ data "google_bigquery_dataset" "security_logs" {
   project    = var.project_id
 }
 
-# BigQuery table for alerts
 data "google_bigquery_table" "alerts" {
-  dataset_id = data.google_bigquery_dataset.security_logs.dataset_id
+  dataset_id = google_bigquery_dataset.security_logs.dataset_id
   table_id   = "alerts"
   project    = var.project_id
-  deletion_protection = false 
+  depends_on = [google_bigquery_dataset.security_logs]
 }
 
 # PubSub topic for alerts
