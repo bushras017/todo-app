@@ -8,8 +8,9 @@ data "google_bigquery_dataset" "security_logs" {
 
 # BigQuery table for alerts
 resource "google_bigquery_table" "alerts" {
-  dataset_id = google_bigquery_dataset.security_logs.dataset_id
+  dataset_id = data.google_bigquery_dataset.security_logs.dataset_id
   table_id   = "alerts"
+  project    = var.project_id
   lifecycle {
     prevent_destroy = true
     ignore_changes = [

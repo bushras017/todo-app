@@ -159,7 +159,7 @@ jobs:
         
         # Then apply changes
         terraform apply -auto-approve
-        
+
     - name: Deploy Django App
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       run: |
@@ -168,7 +168,7 @@ jobs:
         DB_IP=$(terraform -chdir=terraform output -raw db_server_private_ip)
         
         # Create Django environment file
-        cat > django_app/.env << EOF
+        cat > .env << EOF
         DEBUG=False
         DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
         DB_NAME=${{ secrets.DB_NAME }}
@@ -180,17 +180,44 @@ jobs:
         GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
         EOF
 
-        # Copy Django app to web server
-        gcloud compute scp --recurse django_app/* web-server:/opt/django-app/
-        gcloud compute scp django_app/.env web-server:/opt/django-app/
+        # Create deployment directory
+        echo "Setting up deployment directory..."
+        DEPLOY_DIR="deploy_package"
+        mkdir -p $DEPLOY_DIR
+        
+        # Copy all necessary files while maintaining directory structure
+        cp -r manage.py requirements.txt todoApp todos staticfiles $DEPLOY_DIR/
+        cp .env $DEPLOY_DIR/
+        
+        # Create the static files directory if it doesn't exist
+        mkdir -p $DEPLOY_DIR/staticfiles
+
+        # Copy to web server
+        echo "Copying files to web server..."
+        gcloud compute ssh web-server --command "sudo mkdir -p /opt/django-app && sudo chmod 755 /opt/django-app"
+        gcloud compute ssh web-server --command "sudo rm -rf /opt/django-app/*"
+        gcloud compute scp --recurse $DEPLOY_DIR/* web-server:/opt/django-app/
+        gcloud compute scp $DEPLOY_DIR/.env web-server:/opt/django-app/
 
         # Setup and start Django
+        echo "Setting up Django environment..."
         gcloud compute ssh web-server --command "
           cd /opt/django-app && \
+          sudo chown -R \$USER:\$USER . && \
           python3 -m venv venv && \
           source venv/bin/activate && \
           pip install -r requirements.txt && \
           python manage.py migrate && \
           python manage.py collectstatic --noinput && \
-          pkill -f runserver || true && \
-          nohup python manage.py runserver 0.0.0.0:8000 > /var/log/django.log 2>&1 &"
+          # Kill any existing Django process
+          pkill -f 'python manage.py runserver' || true && \
+          # Start Django in background with nohup
+          nohup python manage.py runserver 0.0.0.0:8000 > django.log 2>&1 & \
+          # Wait a bit and check if process is running
+          sleep 5 && \
+          if pgrep -f 'python manage.py runserver' > /dev/null; then
+            echo 'Django server started successfully'
+          else
+            echo 'Failed to start Django server' >&2
+            exit 1
+          fi"
