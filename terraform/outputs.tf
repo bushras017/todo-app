@@ -31,6 +31,6 @@ output "function_name" {
 }
 
 output "bigquery_dataset" {
-  value = google_bigquery_dataset.security_logs.dataset_id
+  value = data.google_bigquery_dataset.security_logs.dataset_id
   description = "The ID of the BigQuery dataset for security logs"
 }
