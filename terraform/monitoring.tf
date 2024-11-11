@@ -6,11 +6,59 @@ data "google_bigquery_dataset" "security_logs" {
   project    = var.project_id
 }
 
-data "google_bigquery_table" "alerts" {
+resource "google_bigquery_table" "alerts" {
   dataset_id = google_bigquery_dataset.security_logs.dataset_id
   table_id   = "alerts"
   project    = var.project_id
-  depends_on = [google_bigquery_dataset.security_logs]
+
+  deletion_protection = true  # Prevents accidental deletion
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      schema,                    # Ignore schema changes
+      labels,                    # Ignore label changes
+      encryption_configuration,  # Ignore encryption changes
+      expiration_time,          # Ignore expiration changes
+      last_modified_time        # Ignore modification time changes
+    ]
+    # This tells Terraform to create a new resource instead of failing
+    create_before_destroy = true
+  }
+
+  time_partitioning {
+    type = "DAY"
+  }
+
+  schema = <<EOF
+[
+  {
+    "name": "alert_name",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "severity",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "instance",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "description",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "timestamp",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED"
+  }
+]
+EOF
 }
 
 # PubSub topic for alerts
