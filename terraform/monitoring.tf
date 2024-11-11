@@ -7,55 +7,10 @@ data "google_bigquery_dataset" "security_logs" {
 }
 
 # BigQuery table for alerts
-resource "google_bigquery_table" "alerts" {
+data "google_bigquery_table" "alerts" {
   dataset_id = data.google_bigquery_dataset.security_logs.dataset_id
   table_id   = "alerts"
   project    = var.project_id
-  lifecycle {
-    prevent_destroy = true
-    ignore_changes = [
-      schema,
-      clustering,
-      encryption_configuration,
-      expiration_time,
-      friendly_name,
-      labels,
-      time_partitioning
-    ]
-  }
-  time_partitioning {
-    type = "DAY"
-  }
-
-  schema = <<EOF
-[
-  {
-    "name": "alert_name",
-    "type": "STRING",
-    "mode": "REQUIRED"
-  },
-  {
-    "name": "severity",
-    "type": "STRING",
-    "mode": "REQUIRED"
-  },
-  {
-    "name": "instance",
-    "type": "STRING",
-    "mode": "REQUIRED"
-  },
-  {
-    "name": "description",
-    "type": "STRING",
-    "mode": "NULLABLE"
-  },
-  {
-    "name": "timestamp",
-    "type": "TIMESTAMP",
-    "mode": "REQUIRED"
-  }
-]
-EOF
 }
 
 # PubSub topic for alerts

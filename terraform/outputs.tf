@@ -34,3 +34,8 @@ output "bigquery_dataset" {
   value = data.google_bigquery_dataset.security_logs.dataset_id
   description = "The ID of the BigQuery dataset for security logs"
 }
+
+output "bigquery_table" {
+  value = data.google_bigquery_table.alerts.table_id
+  description = "The ID of the BigQuery alerts table"
+}
