@@ -1,34 +1,9 @@
 # terraform/monitoring.tf
 
 # BigQuery dataset for logs
-resource "google_bigquery_dataset" "security_logs" {
-  dataset_id                  = "security_logs"
-  friendly_name              = "Security Logs"
-  description                = "Dataset for security logs and alerts"
-  location                   = var.region
-  default_table_expiration_ms = 7776000000  # 90 days
-
-  access {
-    role          = "OWNER"
-    special_group = "projectOwners"
-  }
-
-  # Add explicit access for the service account
-  access {
-    role          = "WRITER"
-    user_by_email = var.service_account_email  # Add this variable
-  }
-    lifecycle {
-    prevent_destroy = true
-    ignore_changes = [
-      access,
-      default_table_expiration_ms,
-      description,
-      friendly_name,
-      labels,
-      default_encryption_configuration
-    ]
-  }
+data "google_bigquery_dataset" "security_logs" {
+  dataset_id = "security_logs"
+  project    = var.project_id
 }
 
 # BigQuery table for alerts
@@ -180,7 +155,7 @@ resource "google_logging_project_sink" "security_sink" {
   name        = "security-logs-sink"
   description = "Security logs export to BigQuery"
   
-  destination = "bigquery.googleapis.com/projects/${var.project_id}/datasets/${google_bigquery_dataset.security_logs.dataset_id}"
+  destination = "bigquery.googleapis.com/projects/${var.project_id}/datasets/${data.google_bigquery_dataset.security_logs.dataset_id}"
   
   filter = <<-EOT
     resource.type="gce_instance" AND
@@ -195,10 +170,6 @@ resource "google_logging_project_sink" "security_sink" {
 
   unique_writer_identity = true
 
-  # Added BigQuery writer IAM binding
-  bigquery_options {
-    use_partitioned_tables = true
-  }
   lifecycle {
     prevent_destroy = true
     ignore_changes = [
