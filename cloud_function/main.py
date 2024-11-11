@@ -125,7 +125,7 @@ class AlertHandler:
         except Exception as e:
             self.logger.log_text(f"Error updating firewall rules: {e}", severity='ERROR')
 
-def handle_pubsub(event, context):
+def alert_handler(event, context):
     """Cloud Function entry point"""
     try:
         handler = AlertHandler()

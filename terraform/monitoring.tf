@@ -134,6 +134,8 @@ resource "google_cloudfunctions_function" "alert_handler" {
   source_archive_bucket = google_storage_bucket.function_bucket.name
   source_archive_object = google_storage_bucket_object.function_archive.name
   
+  entry_point = "alert_handler"
+
   event_trigger {
     event_type = "google.pubsub.topic.publish"
     resource   = google_pubsub_topic.prometheus_alerts.name
