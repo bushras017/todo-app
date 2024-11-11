@@ -146,7 +146,6 @@ resource "google_cloudfunctions_function" "alert_handler" {
   # Add service account
   service_account_email = var.service_account_email
   lifecycle {
-    prevent_destroy = true
     ignore_changes = [
       available_memory_mb,
       description,
@@ -157,7 +156,8 @@ resource "google_cloudfunctions_function" "alert_handler" {
       service_account_email,
       source_archive_bucket,
       source_archive_object,
-      timeout
+      timeout,
+      event_trigger 
     ]
   }
 }
