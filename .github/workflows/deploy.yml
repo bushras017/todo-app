@@ -116,6 +116,9 @@ jobs:
         echo "Importing BigQuery dataset..."
         terraform import google_bigquery_dataset.security_logs \
           "${{ secrets.GCP_PROJECT_ID }}:security_logs" || true
+
+        echo "Verifying BigQuery dataset in state..."
+        terraform state show google_bigquery_dataset.security_logs
         
         echo "Importing Pub/Sub topic..."
         terraform import google_pubsub_topic.prometheus_alerts \

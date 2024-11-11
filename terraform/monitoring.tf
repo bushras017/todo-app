@@ -20,6 +20,14 @@ resource "google_bigquery_dataset" "security_logs" {
   }
     lifecycle {
     prevent_destroy = true
+    ignore_changes = [
+      access,
+      default_table_expiration_ms,
+      description,
+      friendly_name,
+      labels,
+      default_encryption_configuration
+    ]
   }
 }
 
@@ -31,7 +39,10 @@ resource "google_bigquery_table" "alerts" {
     prevent_destroy = true
     ignore_changes = [
       schema,
-      description,
+      clustering,
+      encryption_configuration,
+      expiration_time,
+      friendly_name,
       labels,
       time_partitioning
     ]
