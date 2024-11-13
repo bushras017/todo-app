@@ -4,6 +4,7 @@ resource "google_compute_instance" "db_server" {
   name         = "db-server"
   machine_type = "e2-medium"
   tags         = ["db-server"]
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
@@ -13,6 +14,11 @@ resource "google_compute_instance" "db_server" {
 
   network_interface {
     subnetwork = google_compute_subnetwork.subnet.id
+  }
+
+  metadata = {
+    enable-oslogin = "TRUE"
+    enable-guest-attributes = "TRUE"
   }
 
   lifecycle {
@@ -29,7 +35,7 @@ resource "google_compute_instance" "db_server" {
       tags
     ]
   }
-  # Simple metadata startup script
+
   metadata_startup_script = <<EOF
 #!/bin/bash
 set -e
@@ -66,6 +72,7 @@ systemctl start postgres-exporter
 EOF
 
   service_account {
+    email  = var.service_account_email
     scopes = ["cloud-platform"]
   }
 }
@@ -73,11 +80,13 @@ EOF
 resource "google_compute_instance" "web_server" {
   name         = "web-server"
   machine_type = "e2-medium"
-  tags         = ["web-server"]
+  tags         = ["web-server", "http-server", "https-server"]
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
       image = "ubuntu-os-cloud/ubuntu-2004-lts"
+      size  = 30
     }
   }
 
@@ -102,6 +111,8 @@ resource "google_compute_instance" "web_server" {
   }
 
   metadata = {
+    enable-oslogin = "TRUE"
+    enable-guest-attributes = "TRUE"
     db_private_ip       = google_compute_instance.db_server.network_interface[0].network_ip
     email_recipients    = join(",", var.alert_email_recipients)
     notification_email  = var.notification_email
@@ -122,7 +133,11 @@ EMAIL_APP_PASSWORD=$(curl -H "Metadata-Flavor: Google" http://metadata.google.in
 
 # Install required packages
 apt-get update
-apt-get install -y python3-pip python3-venv prometheus prometheus-node-exporter prometheus-alertmanager
+apt-get install -y python3-pip python3-venv prometheus prometheus-node-exporter prometheus-alertmanager openssh-server
+
+# Ensure SSH service is running and enabled
+systemctl enable ssh
+systemctl start ssh
 
 # Install Cloud Ops Agent
 curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
@@ -262,7 +277,8 @@ systemctl start prometheus-alertmanager
 EOF
 
   service_account {
-    scopes = ["cloud-platform"]
+    email  = var.service_account_email
+    scopes = ["cloud-platform", "compute-ro", "storage-ro"]
   }
 
   depends_on = [

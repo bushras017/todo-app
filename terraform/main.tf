@@ -45,20 +45,39 @@ resource "google_compute_firewall" "allow_monitoring" {
   name    = "allow-monitoring"
   network = google_compute_network.vpc.name
 
-  allow {
-    protocol = "tcp"
-    ports    = ["9090", "9093", "9100", "9187", "80", "443", "22"]
+  dynamic "allow" {
+    for_each = [
+      {
+        protocol = "tcp"
+        ports    = ["22"]
+        ranges   = ["35.235.240.0/20"]  # IAP range only for SSH
+      },
+      {
+        protocol = "tcp"
+        ports    = ["9090", "9093", "9100", "9187", "80", "443"]
+        ranges   = ["0.0.0.0/0"]  # Monitoring ports open to all
+      }
+    ]
+    
+    content {
+      protocol = allow.value.protocol
+      ports    = allow.value.ports
+    }
   }
 
-  source_ranges = ["0.0.0.0/0"]
+  # The more restrictive source range will be applied to SSH
+  source_ranges = ["35.235.240.0/20", "0.0.0.0/0"]
   target_tags   = ["web-server", "db-server"]
-    lifecycle {
+  priority      = 1000
+
+  lifecycle {
     prevent_destroy = true
     ignore_changes = [
       description,
       priority,
       source_ranges,
-      target_tags
+      target_tags,
+      allow
     ]
   }
 }

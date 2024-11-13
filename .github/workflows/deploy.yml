@@ -167,6 +167,19 @@ jobs:
         WEB_IP=$(terraform -chdir=terraform output -raw web_server_public_ip)
         DB_IP=$(terraform -chdir=terraform output -raw db_server_private_ip)
         
+        # Set compute zone
+        gcloud config set compute/zone us-central1-a
+        
+        # Wait for SSH to become available
+        echo "Waiting for SSH to become available..."
+        for i in {1..5}; do
+          if gcloud compute ssh web-server --command="echo 'SSH connection successful'" -- -o ConnectTimeout=20; then
+            break
+          fi
+          echo "Attempt $i: SSH connection failed, waiting 30 seconds..."
+          sleep 30
+        done
+        
         # Create Django environment file
         cat > .env << EOF
         DEBUG=False
@@ -192,32 +205,46 @@ jobs:
         # Create the static files directory if it doesn't exist
         mkdir -p $DEPLOY_DIR/staticfiles
 
-        # Copy to web server
+        # Copy to web server with retries
         echo "Copying files to web server..."
-        gcloud compute ssh web-server --zone=us-central1-a --command "sudo mkdir -p /opt/django-app && sudo chmod 755 /opt/django-app"
-        gcloud compute ssh web-server --zone=us-central1-a --command "sudo rm -rf /opt/django-app/*"
-        gcloud compute scp --recurse $DEPLOY_DIR/* web-server:/opt/django-app/ --zone=us-central1-a
-        gcloud compute scp $DEPLOY_DIR/.env web-server:/opt/django-app/ --zone=us-central1-a
+        for i in {1..3}; do
+          if gcloud compute scp --recurse $DEPLOY_DIR/* web-server:/tmp/django-app/ && \
+             gcloud compute scp $DEPLOY_DIR/.env web-server:/tmp/django-app/ && \
+             gcloud compute ssh web-server --command="sudo mkdir -p /opt/django-app && \
+                                          sudo cp -r /tmp/django-app/* /opt/django-app/ && \
+                                          sudo cp /tmp/django-app/.env /opt/django-app/ && \
+                                          sudo chmod 755 /opt/django-app && \
+                                          sudo rm -rf /tmp/django-app"; then
+            break
+          fi
+          echo "Attempt $i: File copy failed, retrying in 10 seconds..."
+          sleep 10
+        done
 
-        # Setup and start Django
+        # Setup and start Django with better error handling
         echo "Setting up Django environment..."
-        gcloud compute ssh web-server --zone=us-central1-a --command "
-          cd /opt/django-app && \
-          sudo chown -R \$USER:\$USER . && \
-          python3 -m venv venv && \
-          source venv/bin/activate && \
-          pip install -r requirements.txt && \
-          python manage.py migrate && \
-          python manage.py collectstatic --noinput && \
+        gcloud compute ssh web-server --command="
+          set -e
+          cd /opt/django-app
+          sudo chown -R \$USER:\$USER .
+          python3 -m venv venv
+          source venv/bin/activate
+          pip install -r requirements.txt
+          python manage.py migrate
+          python manage.py collectstatic --noinput
+          
           # Kill any existing Django process
-          pkill -f 'python manage.py runserver' || true && \
+          pkill -f 'python manage.py runserver' || true
+          
           # Start Django in background with nohup
-          nohup python manage.py runserver 0.0.0.0:8000 > django.log 2>&1 & \
-          # Wait a bit and check if process is running
-          sleep 5 && \
+          nohup python manage.py runserver 0.0.0.0:8000 > django.log 2>&1 &
+          
+          # Wait and verify
+          sleep 10
           if pgrep -f 'python manage.py runserver' > /dev/null; then
             echo 'Django server started successfully'
           else
             echo 'Failed to start Django server' >&2
+            cat django.log
             exit 1
           fi"
