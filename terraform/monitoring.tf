@@ -20,7 +20,6 @@ resource "google_bigquery_table" "alerts" {
       labels,                    # Ignore label changes
       encryption_configuration,  # Ignore encryption changes
       expiration_time,          # Ignore expiration changes
-      last_modified_time        # Ignore modification time changes
     ]
     # This tells Terraform to create a new resource instead of failing
     create_before_destroy = true
