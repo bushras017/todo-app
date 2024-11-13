@@ -158,6 +158,10 @@ resource "google_cloudfunctions_function" "alert_handler" {
       event_trigger 
     ]
   }
+
+  depends_on = [
+    null_resource.check_alerts_table
+  ]
 }
 
 # Log sink with explicit permission
