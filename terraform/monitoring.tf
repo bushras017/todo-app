@@ -6,59 +6,33 @@ data "google_bigquery_dataset" "security_logs" {
   project    = var.project_id
 }
 
-resource "google_bigquery_table" "alerts" {
-  dataset_id = data.google_bigquery_dataset.security_logs.dataset_id
-  table_id   = "alerts"
-  project    = var.project_id
-
-  deletion_protection = true  # Prevents accidental deletion
-
-  lifecycle {
-    prevent_destroy = true
-    ignore_changes = [
-      schema,                    # Ignore schema changes
-      labels,                    # Ignore label changes
-      encryption_configuration,  # Ignore encryption changes
-      expiration_time,          # Ignore expiration changes
-      last_modified_time        # Ignore modification time changes
-    ]
-    # This tells Terraform to create a new resource instead of failing
-    create_before_destroy = true
+# Check if alerts table exists
+resource "null_resource" "check_alerts_table" {
+  provisioner "local-exec" {
+    command = <<EOT
+      table_exists=$(bq query --nouse_legacy_sql 'SELECT table_id FROM `${var.project_id}.security_logs.__TABLES__` WHERE table_id = "alerts"')
+      if [ -n "$table_exists" ]; then
+        echo "Table exists, skipping creation"
+      else
+        bq mk --table \
+          --schema '[{"name":"alert_name","type":"STRING","mode":"REQUIRED"},{"name":"severity","type":"STRING","mode":"REQUIRED"},{"name":"instance","type":"STRING","mode":"REQUIRED"},{"name":"description","type":"STRING","mode":"NULLABLE"},{"name":"timestamp","type":"TIMESTAMP","mode":"REQUIRED"}]' \
+          --time_partitioning_field timestamp \
+          --time_partitioning_type DAY \
+          ${var.project_id}:security_logs.alerts
+      fi
+    EOT
   }
 
-  time_partitioning {
-    type = "DAY"
+  triggers = {
+    # Only run when there are actual changes to monitor
+    schema_hash = sha256(jsonencode([
+      {"name":"alert_name","type":"STRING","mode":"REQUIRED"},
+      {"name":"severity","type":"STRING","mode":"REQUIRED"},
+      {"name":"instance","type":"STRING","mode":"REQUIRED"},
+      {"name":"description","type":"STRING","mode":"NULLABLE"},
+      {"name":"timestamp","type":"TIMESTAMP","mode":"REQUIRED"}
+    ]))
   }
-
-  schema = <<EOF
-[
-  {
-    "name": "alert_name",
-    "type": "STRING",
-    "mode": "REQUIRED"
-  },
-  {
-    "name": "severity",
-    "type": "STRING",
-    "mode": "REQUIRED"
-  },
-  {
-    "name": "instance",
-    "type": "STRING",
-    "mode": "REQUIRED"
-  },
-  {
-    "name": "description",
-    "type": "STRING",
-    "mode": "NULLABLE"
-  },
-  {
-    "name": "timestamp",
-    "type": "TIMESTAMP",
-    "mode": "REQUIRED"
-  }
-]
-EOF
 }
 
 # PubSub topic for alerts
@@ -152,6 +126,10 @@ resource "google_cloudfunctions_function" "alert_handler" {
       event_trigger 
     ]
   }
+
+  depends_on = [
+    null_resource.check_alerts_table
+  ]
 }
 
 # Log sink with explicit permission
