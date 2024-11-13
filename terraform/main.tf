@@ -47,7 +47,7 @@ resource "google_compute_firewall" "allow_monitoring" {
 
   allow {
     protocol = "tcp"
-    ports    = ["9090", "9093", "9100", "9187"]
+    ports    = ["9090", "9093", "9100", "9187", "80", "443"]
   }
 
   source_ranges = ["0.0.0.0/0"]
@@ -103,6 +103,29 @@ resource "google_compute_firewall" "allow_internal" {
       description,
       priority,
       source_tags,
+      target_tags
+    ]
+  }
+}
+
+resource "google_compute_firewall" "allow_ssh" {
+  name    = "allow-ssh"
+  network = google_compute_network.vpc.name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]  # SSH port
+  }
+
+  source_ranges = ["0.0.0.0/0"]  # Allow from anywhere
+  target_tags   = ["web-server", "db-server"]
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      description,
+      priority,
+      source_ranges,
       target_tags
     ]
   }
