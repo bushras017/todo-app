@@ -7,7 +7,7 @@ data "google_bigquery_dataset" "security_logs" {
 }
 
 resource "google_bigquery_table" "alerts" {
-  dataset_id = data.google_bigquery_dataset.security_logs
+  dataset_id = data.google_bigquery_dataset.security_logs.dataset_id
   table_id   = "alerts"
   project    = var.project_id
 
