@@ -6,66 +6,59 @@ data "google_bigquery_dataset" "security_logs" {
   project    = var.project_id
 }
 
-# Explicitly create BigQuery table with proper IAM permissions
 resource "google_bigquery_table" "alerts" {
-  dataset_id = data.google_bigquery_dataset.security_logs.dataset_id
-  project    = var.project_id
+  dataset_id = google_bigquery_dataset.security_logs.dataset_id
   table_id   = "alerts"
-  deletion_protection = false  # Set to true in production
+  project    = var.project_id
 
-  schema = jsonencode([
-    {
-      name = "alert_name"
-      type = "STRING"
-      mode = "REQUIRED"
-    },
-    {
-      name = "severity"
-      type = "STRING"
-      mode = "REQUIRED"
-    },
-    {
-      name = "instance"
-      type = "STRING"
-      mode = "REQUIRED"
-    },
-    {
-      name = "description"
-      type = "STRING"
-      mode = "NULLABLE"
-    },
-    {
-      name = "timestamp"
-      type = "TIMESTAMP"
-      mode = "REQUIRED"
-    }
-  ])
-
-  time_partitioning {
-    type  = "DAY"
-    field = "timestamp"
-  }
+  deletion_protection = true  # Prevents accidental deletion
 
   lifecycle {
-    prevent_destroy = false  # Set to true in production
+    prevent_destroy = true
     ignore_changes = [
-      schema,
-      labels,
-      encryption_configuration,
-      expiration_time,
-      last_modified_time
+      schema,                    # Ignore schema changes
+      labels,                    # Ignore label changes
+      encryption_configuration,  # Ignore encryption changes
+      expiration_time,          # Ignore expiration changes
+      last_modified_time        # Ignore modification time changes
     ]
+    # This tells Terraform to create a new resource instead of failing
+    create_before_destroy = true
   }
-}
 
-# Add necessary BigQuery IAM permissions
-resource "google_project_iam_binding" "bigquery_admin" {
-  project = var.project_id
-  role    = "roles/bigquery.admin"
-  members = [
-    "serviceAccount:${var.service_account_email}",
-    google_logging_project_sink.security_sink.writer_identity
-  ]
+  time_partitioning {
+    type = "DAY"
+  }
+
+  schema = <<EOF
+[
+  {
+    "name": "alert_name",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "severity",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "instance",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "description",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "timestamp",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED"
+  }
+]
+EOF
 }
 
 # PubSub topic for alerts
@@ -101,7 +94,7 @@ resource "google_storage_bucket_object" "function_archive" {
   bucket = google_storage_bucket.function_bucket.name
   source = "${path.module}/function.zip"
   lifecycle {
-    prevent_destroy = false
+    prevent_destroy = false  # Allow updates for function deployments
     ignore_changes = [
       detect_md5hash,
       metadata
@@ -109,6 +102,7 @@ resource "google_storage_bucket_object" "function_archive" {
   }
 }
 
+# Added IAM binding for function service account
 resource "google_project_iam_binding" "function_invoker" {
   project = var.project_id
   role    = "roles/cloudfunctions.invoker"
@@ -141,8 +135,8 @@ resource "google_cloudfunctions_function" "alert_handler" {
     PROJECT_ID = var.project_id
   }
 
+  # Add service account
   service_account_email = var.service_account_email
-  
   lifecycle {
     ignore_changes = [
       available_memory_mb,
@@ -186,6 +180,19 @@ resource "google_logging_project_sink" "security_sink" {
       description,
       filter,
       exclusions
+    ]
+  }
+}
+
+# Add IAM binding for the log sink service account
+resource "google_project_iam_binding" "log_sink_writer" {
+  project = var.project_id
+  role    = "roles/bigquery.dataEditor"
+  members = [google_logging_project_sink.security_sink.writer_identity]
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      members
     ]
   }
 }
