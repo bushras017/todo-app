@@ -108,6 +108,29 @@ resource "google_compute_firewall" "allow_internal" {
   }
 }
 
+resource "google_compute_firewall" "allow_ssh" {
+  name    = "allow-ssh"
+  network = google_compute_network.vpc.name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]  # SSH port
+  }
+
+  source_ranges = ["0.0.0.0/0"]  # Allow from anywhere
+  target_tags   = ["web-server", "db-server"]
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      description,
+      priority,
+      source_ranges,
+      target_tags
+    ]
+  }
+}
+
 # Firewall rule for blocked IPs
 resource "google_compute_firewall" "blocked_ips" {
   name    = "blocked-ips"
