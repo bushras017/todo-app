@@ -47,7 +47,7 @@ resource "google_compute_firewall" "allow_monitoring" {
 
   allow {
     protocol = "tcp"
-    ports    = ["9090", "9093", "9100", "9187"]
+    ports    = ["9090", "9093", "9100", "9187", "80", "443", "22"]
   }
 
   source_ranges = ["0.0.0.0/0"]

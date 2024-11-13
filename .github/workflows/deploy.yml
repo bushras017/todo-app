@@ -194,14 +194,14 @@ jobs:
 
         # Copy to web server
         echo "Copying files to web server..."
-        gcloud compute ssh web-server --command "sudo mkdir -p /opt/django-app && sudo chmod 755 /opt/django-app"
-        gcloud compute ssh web-server --command "sudo rm -rf /opt/django-app/*"
-        gcloud compute scp --recurse $DEPLOY_DIR/* web-server:/opt/django-app/
-        gcloud compute scp $DEPLOY_DIR/.env web-server:/opt/django-app/
+        gcloud compute ssh web-server --zone=us-central1-a --command "sudo mkdir -p /opt/django-app && sudo chmod 755 /opt/django-app"
+        gcloud compute ssh web-server --zone=us-central1-a --command "sudo rm -rf /opt/django-app/*"
+        gcloud compute scp --recurse $DEPLOY_DIR/* web-server:/opt/django-app/ --zone=us-central1-a
+        gcloud compute scp $DEPLOY_DIR/.env web-server:/opt/django-app/ --zone=us-central1-a
 
         # Setup and start Django
         echo "Setting up Django environment..."
-        gcloud compute ssh web-server --command "
+        gcloud compute ssh web-server --zone=us-central1-a --command "
           cd /opt/django-app && \
           sudo chown -R \$USER:\$USER . && \
           python3 -m venv venv && \
