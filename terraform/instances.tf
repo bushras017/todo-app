@@ -154,7 +154,9 @@ source /etc/profile.d/app_vars.sh
 # Install required packages
 apt-get update
 apt-get install -y python3-pip python3-venv prometheus prometheus-node-exporter prometheus-alertmanager git nginx supervisor mailutils
+apt-get install -y python3-pip python3-venv prometheus prometheus-node-exporter prometheus-alertmanager git nginx supervisor mailutils
 
+# Install Google Cloud Ops Agent
 # Install Google Cloud Ops Agent
 curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
 bash add-google-cloud-ops-agent-repo.sh --also-install
@@ -162,6 +164,7 @@ bash add-google-cloud-ops-agent-repo.sh --also-install
 # Setup directories
 mkdir -p /etc/prometheus/rules
 mkdir -p /var/log/prometheus
+mkdir -p /var/log/django
 mkdir -p /var/log/django
 mkdir -p /opt/django-app
 
@@ -197,20 +200,24 @@ scrape_configs:
   - job_name: 'django'
     static_configs:
       - targets: ['${EXTERNAL_IP}:8000']
+      - targets: ['${EXTERNAL_IP}:8000']
         labels:
           instance: 'web-server'
 
   - job_name: 'node'
     static_configs:
       - targets: ['${EXTERNAL_IP}:9100']
+      - targets: ['${EXTERNAL_IP}:9100']
         labels:
           instance: 'web-server'
+      - targets: ['${DB_PRIVATE_IP}:9100']
       - targets: ['${DB_PRIVATE_IP}:9100']
         labels:
           instance: 'db-server'
 
   - job_name: 'postgres'
     static_configs:
+      - targets: ['${DB_PRIVATE_IP}:9187']
       - targets: ['${DB_PRIVATE_IP}:9187']
         labels:
           instance: 'db-server'
@@ -234,6 +241,7 @@ groups:
     annotations:
       summary: High CPU Usage
       description: "CPU usage is above 80% on {{ $labels.instance }}"
+      description: "CPU usage is above 80% on {{ $labels.instance }}"
 
   - alert: DiskSpaceLow
     expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes * 100 > 85
@@ -243,6 +251,7 @@ groups:
     annotations:
       summary: Low Disk Space
       description: "Disk usage is above 85% on {{ $labels.instance }}"
+      description: "Disk usage is above 85% on {{ $labels.instance }}"
 
   - alert: PostgresDown
     expr: pg_up == 0
@@ -251,6 +260,7 @@ groups:
       severity: critical
     annotations:
       summary: PostgreSQL Server Down
+      description: "PostgreSQL server is down on {{ $labels.instance }}"
       description: "PostgreSQL server is down on {{ $labels.instance }}"
 
   - alert: HighFailedLogins
@@ -262,13 +272,17 @@ groups:
       summary: High Failed Login Rate
       description: "Unusually high rate of failed login attempts"
 EOF7
+EOF7
 
 # Configure Alertmanager
 cat > /etc/alertmanager/alertmanager.yml << 'EOF8'
 global:
   resolve_timeout: 5m
   smtp_from: '${NOTIFICATION_EMAIL}'
+  smtp_from: '${NOTIFICATION_EMAIL}'
   smtp_smarthost: 'smtp.gmail.com:587'
+  smtp_auth_username: '${NOTIFICATION_EMAIL}'
+  smtp_auth_password: '${EMAIL_APP_PASSWORD}'
   smtp_auth_username: '${NOTIFICATION_EMAIL}'
   smtp_auth_password: '${EMAIL_APP_PASSWORD}'
   smtp_require_tls: true
@@ -285,10 +299,18 @@ route:
       group_wait: 10s
       repeat_interval: 30m
       receiver: 'email-notifications'
+  receiver: 'email-notifications'
+  routes:
+    - match:
+        severity: critical
+      group_wait: 10s
+      repeat_interval: 30m
+      receiver: 'email-notifications'
 
 receivers:
   - name: 'email-notifications'
     email_configs:
+      - to: '${EMAIL_RECIPIENTS}'
       - to: '${EMAIL_RECIPIENTS}'
         send_resolved: true
 EOF8

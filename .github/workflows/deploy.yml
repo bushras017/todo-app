@@ -50,6 +50,11 @@ jobs:
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
 
+    - name: Make init scripts executable
+      run: |
+        chmod +x deployment/scripts/init-web.sh
+        chmod +x deployment/scripts/init-db.sh
+        
     - name: Create terraform.tfvars
       run: |
         cat > terraform/terraform.tfvars << EOF
