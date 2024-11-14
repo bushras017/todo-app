@@ -171,12 +171,9 @@ jobs:
         cat > .env << EOF
         DEBUG=False
         DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
-        DB_NAME=${{ secrets.DB_NAME }}
-        DB_USER=${{ secrets.DB_USER }}
-        DB_PASSWORD=${{ secrets.DB_PASSWORD }}
         DB_HOST=$DB_IP
         DB_PORT=5432
-        ALLOWED_HOSTS=$WEB_IP,localhost,127.0.0.1
+        DB_PASSWORD=${{ secrets.DB_PASSWORD }}
         GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
         EOF
 
@@ -192,32 +189,54 @@ jobs:
         # Create the static files directory if it doesn't exist
         mkdir -p $DEPLOY_DIR/staticfiles
 
-        # Copy to web server
+        # Set up the application directory with correct permissions
+        echo "Setting up application directory..."
+        gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
+          sudo mkdir -p /opt/django-app && \
+          sudo chown -R \$USER:\$USER /opt/django-app && \
+          sudo chmod -R 755 /opt/django-app"
+
+        # Remove existing files
+        echo "Cleaning existing files..."
+        gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "rm -rf /opt/django-app/*"
+
+        # Copy files to web server
         echo "Copying files to web server..."
-        gcloud compute ssh web-server --zone=us-central1-a --command "sudo mkdir -p /opt/django-app && sudo chmod 755 /opt/django-app"
-        gcloud compute ssh web-server --zone=us-central1-a --command "sudo rm -rf /opt/django-app/*"
-        gcloud compute scp --recurse $DEPLOY_DIR/* web-server:/opt/django-app/ --zone=us-central1-a
-        gcloud compute scp $DEPLOY_DIR/.env web-server:/opt/django-app/ --zone=us-central1-a
+        gcloud compute scp --recurse $DEPLOY_DIR/* web-server:/opt/django-app/ --zone=${{ env.ZONE }}
+        gcloud compute scp $DEPLOY_DIR/.env web-server:/opt/django-app/ --zone=${{ env.ZONE }}
 
         # Setup and start Django
         echo "Setting up Django environment..."
-        gcloud compute ssh web-server --zone=us-central1-a --command "
+        gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
           cd /opt/django-app && \
-          sudo chown -R \$USER:\$USER . && \
+          # Create and activate virtual environment
           python3 -m venv venv && \
           source venv/bin/activate && \
+          
+          # Install dependencies
           pip install -r requirements.txt && \
+          
+          # Run Django commands
           python manage.py migrate && \
           python manage.py collectstatic --noinput && \
-          # Kill any existing Django process
+          
+          # Ensure proper ownership of all files
+          sudo chown -R \$USER:\$USER . && \
+          
+          # Stop existing Django process
           pkill -f 'python manage.py runserver' || true && \
-          # Start Django in background with nohup
-          nohup python manage.py runserver 0.0.0.0:8000 > django.log 2>&1 & \
-          # Wait a bit and check if process is running
+          
+          # Start Django with proper logging
+          mkdir -p logs && \
+          nohup python manage.py runserver 0.0.0.0:8000 > logs/django.log 2>&1 & \
+          
+          # Verify the server started
           sleep 5 && \
           if pgrep -f 'python manage.py runserver' > /dev/null; then
             echo 'Django server started successfully'
+            exit 0
           else
             echo 'Failed to start Django server' >&2
+            cat logs/django.log
             exit 1
           fi"
