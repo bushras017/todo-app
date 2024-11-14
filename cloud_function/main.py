@@ -83,47 +83,13 @@ class AlertHandler:
         instance = alert_data['labels'].get('instance')
         ip_address = alert_data['labels'].get('source_ip')
         
-        if ip_address:
-            self.update_firewall_rules(ip_address)
-            
+        # Log the failed login attempt without blocking the IP
         self.logger.log_struct({
             'type': 'failed_logins',
             'instance': instance,
             'ip_address': ip_address,
-            'action': 'blocked_ip'
+            'action': 'logged_attempt'  # Changed from 'blocked_ip'
         }, severity='WARNING')
-
-    def update_firewall_rules(self, ip_to_block: str) -> None:
-        """Update firewall rules to block IP"""
-        try:
-            firewall = self.compute_client.get(
-                project=self.project_id,
-                firewall='blocked-ips'
-            )
-            
-            # Add IP to blocked list
-            current_ranges = set(firewall.source_ranges)
-            current_ranges.add(f"{ip_to_block}/32")
-            
-            # Convert firewall to dict for update
-            firewall_dict = {
-                'name': firewall.name,
-                'sourceRanges': list(current_ranges),
-                'denied': [{'IPProtocol': 'all'}],
-                'direction': firewall.direction,
-                'priority': firewall.priority,
-                'targetTags': firewall.target_tags
-            }
-            
-            operation = self.compute_client.patch(
-                project=self.project_id,
-                firewall='blocked-ips',
-                firewall_resource=firewall_dict
-            )
-            
-            self.logger.log_text(f"Blocked IP address: {ip_to_block}")
-        except Exception as e:
-            self.logger.log_text(f"Error updating firewall rules: {e}", severity='ERROR')
 
 def alert_handler(event, context):
     """Cloud Function entry point"""

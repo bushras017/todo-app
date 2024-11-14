@@ -1,14 +1,17 @@
-# deployment/scripts/init-web.sh
 #!/bin/bash
 set -e
 
-# Get instance IPs
+# Get instance IPs and metadata
 INSTANCE_IP=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)
 EXTERNAL_IP=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip)
+DB_PRIVATE_IP=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/db_private_ip)
+EMAIL_RECIPIENTS=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/email_recipients)
+NOTIFICATION_EMAIL=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/notification_email)
+EMAIL_APP_PASSWORD=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/email_app_password)
 
 # Install required packages
 apt-get update
-apt-get install -y python3-pip python3-venv prometheus prometheus-node-exporter prometheus-alertmanager
+apt-get install -y python3-pip python3-venv prometheus prometheus-node-exporter prometheus-alertmanager git
 
 # Install Google Cloud Ops Agent
 curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
@@ -17,7 +20,31 @@ bash add-google-cloud-ops-agent-repo.sh --also-install
 # Setup directories
 mkdir -p /etc/prometheus/rules
 mkdir -p /var/log/prometheus
-mkdir -p /opt/django-app
+
+# Clone and setup Django application
+git clone https://github.com/bushras017/django-todo.git /opt/django-app
+cd /opt/django-app
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Create systemd service for Django
+cat > /etc/systemd/system/django.service << EOL
+[Unit]
+Description=Django Application
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/django-app
+Environment="PATH=/opt/django-app/venv/bin"
+ExecStart=/opt/django-app/venv/bin/python manage.py runserver 0.0.0.0:8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOL
 
 # Configure Prometheus
 cat > /etc/default/prometheus << EOF
@@ -178,4 +205,6 @@ systemctl enable prometheus-node-exporter
 systemctl start prometheus-node-exporter
 systemctl enable prometheus-alertmanager
 systemctl start prometheus-alertmanager
+systemctl enable django
+systemctl start django
 systemctl restart google-cloud-ops-agent

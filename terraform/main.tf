@@ -45,28 +45,12 @@ resource "google_compute_firewall" "allow_monitoring" {
   name    = "allow-monitoring"
   network = google_compute_network.vpc.name
 
-  dynamic "allow" {
-    for_each = [
-      {
-        protocol = "tcp"
-        ports    = ["22"]
-        ranges   = ["35.235.240.0/20"]  # IAP range only for SSH
-      },
-      {
-        protocol = "tcp"
-        ports    = ["9090", "9093", "9100", "9187", "80", "443"]
-        ranges   = ["0.0.0.0/0"]  # Monitoring ports open to all
-      }
-    ]
-    
-    content {
-      protocol = allow.value.protocol
-      ports    = allow.value.ports
-    }
+  allow {
+    protocol = "tcp"
+    ports    = ["9090", "9093", "9100", "9187", "22", "80", "443", "587"]
   }
 
-  # The more restrictive source range will be applied to SSH
-  source_ranges = ["35.235.240.0/20", "0.0.0.0/0"]
+  source_ranges = ["0.0.0.0/0"]
   target_tags   = ["web-server", "db-server"]
   priority      = 1000
 
@@ -77,7 +61,6 @@ resource "google_compute_firewall" "allow_monitoring" {
       priority,
       source_ranges,
       target_tags,
-      allow
     ]
   }
 }
@@ -127,24 +110,3 @@ resource "google_compute_firewall" "allow_internal" {
   }
 }
 
-# Firewall rule for blocked IPs
-resource "google_compute_firewall" "blocked_ips" {
-  name    = "blocked-ips"
-  network = google_compute_network.vpc.name
-  deny {
-    protocol = "all"
-  }
-  source_ranges = []  # Will be updated by Cloud Function
-  target_tags   = ["web-server", "db-server"]
-  priority      = 1000
-    lifecycle {
-    prevent_destroy = true
-    ignore_changes = [
-      description,
-      priority,
-      source_ranges,
-      target_tags,
-      deny
-    ]
-  }
-}
