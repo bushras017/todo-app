@@ -5,6 +5,14 @@ provider "google" {
   zone    = var.zone
 }
 
+terraform {
+  required_providers {
+    template = {
+      source = "hashicorp/template"
+      version = "~> 2.0"
+    }
+  }
+}
 # Network configuration
 resource "google_compute_network" "vpc" {
   name                    = "devsecops-vpc"
