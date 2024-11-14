@@ -80,11 +80,13 @@ EOF
 resource "google_compute_instance" "web_server" {
   name         = "web-server"
   machine_type = "e2-medium"
-  tags         = ["web-server"]
+  tags         = ["web-server", "http-server", "https-server"]
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
       image = "ubuntu-os-cloud/ubuntu-2004-lts"
+      size  = 30
     }
   }
 
@@ -109,6 +111,8 @@ resource "google_compute_instance" "web_server" {
   }
 
   metadata = {
+    enable-oslogin = "TRUE"
+    enable-guest-attributes = "TRUE"
     db_private_ip       = google_compute_instance.db_server.network_interface[0].network_ip
     email_recipients    = join(",", var.alert_email_recipients)
     notification_email  = var.notification_email
@@ -186,10 +190,10 @@ server {
 
     location / {
         proxy_pass http://unix:/tmp/django.sock;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 EOF3
@@ -205,8 +209,8 @@ DJANGO_SECRET_KEY='\$(openssl rand -hex 32)'
 ALLOWED_HOSTS=\${EXTERNAL_IP},localhost,127.0.0.1
 DB_NAME=django_db
 DB_USER=django_user
-DB_PASSWORD=\${DB_PASSWORD}
-DB_HOST=\${DB_PRIVATE_IP}
+DB_PASSWORD=${DB_PASSWORD}
+DB_HOST=${DB_PRIVATE_IP}
 DB_PORT=5432
 EOF4
 
@@ -236,22 +240,22 @@ rule_files:
 scrape_configs:
   - job_name: 'django'
     static_configs:
-      - targets: ['\${EXTERNAL_IP}:8000']
+      - targets: ['${EXTERNAL_IP}:8000']
         labels:
           instance: 'web-server'
 
   - job_name: 'node'
     static_configs:
-      - targets: ['\${EXTERNAL_IP}:9100']
+      - targets: ['${EXTERNAL_IP}:9100']
         labels:
           instance: 'web-server'
-      - targets: ['\${DB_PRIVATE_IP}:9100']
+      - targets: ['${DB_PRIVATE_IP}:9100']
         labels:
           instance: 'db-server'
 
   - job_name: 'postgres'
     static_configs:
-      - targets: ['\${DB_PRIVATE_IP}:9187']
+      - targets: ['${DB_PRIVATE_IP}:9187']
         labels:
           instance: 'db-server'
 
@@ -273,7 +277,7 @@ groups:
       severity: warning
     annotations:
       summary: High CPU Usage
-      description: "CPU usage is above 80% on {{ \$labels.instance }}"
+      description: "CPU usage is above 80% on {{ $labels.instance }}"
 
   - alert: DiskSpaceLow
     expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes * 100 > 85
@@ -282,7 +286,7 @@ groups:
       severity: warning
     annotations:
       summary: Low Disk Space
-      description: "Disk usage is above 85% on {{ \$labels.instance }}"
+      description: "Disk usage is above 85% on {{ $labels.instance }}"
 
   - alert: PostgresDown
     expr: pg_up == 0
@@ -291,7 +295,7 @@ groups:
       severity: critical
     annotations:
       summary: PostgreSQL Server Down
-      description: "PostgreSQL server is down on {{ \$labels.instance }}"
+      description: "PostgreSQL server is down on {{ $labels.instance }}"
 
   - alert: HighFailedLogins
     expr: rate(django_http_responses_total{status="401"}[5m]) > 1
@@ -311,10 +315,10 @@ EOF8
 cat << EOF9 > /etc/alertmanager/alertmanager.yml
 global:
   resolve_timeout: 5m
-  smtp_from: '\${NOTIFICATION_EMAIL}'
+  smtp_from: '${NOTIFICATION_EMAIL}'
   smtp_smarthost: 'smtp.gmail.com:587'
-  smtp_auth_username: '\${NOTIFICATION_EMAIL}'
-  smtp_auth_password: '\${EMAIL_APP_PASSWORD}'
+  smtp_auth_username: '${NOTIFICATION_EMAIL}'
+  smtp_auth_password: '${EMAIL_APP_PASSWORD}'
   smtp_require_tls: true
 
 route:
@@ -333,7 +337,7 @@ route:
 receivers:
   - name: 'email-notifications'
     email_configs:
-      - to: '\${EMAIL_RECIPIENTS}'
+      - to: '${EMAIL_RECIPIENTS}'
         send_resolved: true
 EOF9
 
@@ -362,8 +366,8 @@ metrics:
       type: prometheus
       collection_interval: 30s
       endpoints:
-        - http://\${INSTANCE_IP}:9090/metrics
-        - http://\${INSTANCE_IP}:9100/metrics  # Node Exporter metrics
+        - http://${INSTANCE_IP}:9090/metrics
+        - http://${INSTANCE_IP}:9100/metrics  # Node Exporter metrics
   service:
     pipelines:
       default:
@@ -490,7 +494,8 @@ EOF14
 EOF
 
   service_account {
-    scopes = ["cloud-platform"]
+    email  = var.service_account_email
+    scopes = ["cloud-platform", "compute-ro", "storage-ro"]
   }
 
   depends_on = [
