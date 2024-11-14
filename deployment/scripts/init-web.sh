@@ -11,7 +11,7 @@ EMAIL_APP_PASSWORD=$(curl -H "Metadata-Flavor: Google" http://metadata.google.in
 
 # Install required packages
 apt-get update
-apt-get install -y python3-pip python3-venv prometheus prometheus-node-exporter prometheus-alertmanager git
+apt-get install -y python3-pip python3-venv prometheus prometheus-node-exporter prometheus-alertmanager git nginx supervisor
 
 # Install Google Cloud Ops Agent
 curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
@@ -20,31 +20,85 @@ bash add-google-cloud-ops-agent-repo.sh --also-install
 # Setup directories
 mkdir -p /etc/prometheus/rules
 mkdir -p /var/log/prometheus
+mkdir -p /var/log/django
+mkdir -p /opt/django-app
 
-# Clone and setup Django application
+# Create django user
+useradd -r -s /bin/false django
+
+# Clone and setup Django application with proper permissions
 git clone https://github.com/bushras017/django-todo.git /opt/django-app
 cd /opt/django-app
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+pip install gunicorn  # Add gunicorn for production serving
 
-# Create systemd service for Django
-cat > /etc/systemd/system/django.service << EOL
-[Unit]
-Description=Django Application
-After=network.target
+# Set proper ownership
+chown -R django:django /opt/django-app
+chown -R django:django /var/log/django
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/django-app
-Environment="PATH=/opt/django-app/venv/bin"
-ExecStart=/opt/django-app/venv/bin/python manage.py runserver 0.0.0.0:8000
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
+# Create supervisor configuration for Django
+cat > /etc/supervisor/conf.d/django.conf << EOL
+[program:django]
+command=/opt/django-app/venv/bin/gunicorn --workers 3 --bind unix:/tmp/django.sock todoApp.wsgi:application
+directory=/opt/django-app
+user=django
+group=django
+autostart=true
+autorestart=true
+stderr_logfile=/var/log/django/gunicorn.err.log
+stdout_logfile=/var/log/django/gunicorn.out.log
+environment=PATH="/opt/django-app/venv/bin"
 EOL
+
+# Configure Nginx
+cat > /etc/nginx/sites-available/django << EOL
+server {
+    listen 8000;
+    server_name _;
+
+    access_log /var/log/nginx/django_access.log;
+    error_log /var/log/nginx/django_error.log;
+
+    location /static/ {
+        alias /opt/django-app/staticfiles/;
+    }
+
+    location / {
+        proxy_pass http://unix:/tmp/django.sock;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOL
+
+# Enable Nginx site
+ln -sf /etc/nginx/sites-available/django /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+
+# Create Django environment file
+cat > /opt/django-app/.env << EOL
+DEBUG=False
+DJANGO_SECRET_KEY='$(openssl rand -hex 32)'
+ALLOWED_HOSTS=${EXTERNAL_IP},localhost,127.0.0.1
+DB_NAME=django_db
+DB_USER=django_user
+DB_PASSWORD=${DB_PASSWORD}
+DB_HOST=${DB_PRIVATE_IP}
+DB_PORT=5432
+EOL
+
+# Set proper permissions for .env file
+chown django:django /opt/django-app/.env
+chmod 600 /opt/django-app/.env
+
+# Collect static files
+cd /opt/django-app
+source venv/bin/activate
+python manage.py collectstatic --noinput
 
 # Configure Prometheus
 cat > /etc/default/prometheus << EOF
@@ -205,6 +259,32 @@ systemctl enable prometheus-node-exporter
 systemctl start prometheus-node-exporter
 systemctl enable prometheus-alertmanager
 systemctl start prometheus-alertmanager
-systemctl enable django
-systemctl start django
+systemctl enable nginx
+systemctl start nginx
+systemctl enable supervisor
+systemctl start supervisor
+
+# Restart Nginx and Supervisor
+systemctl restart nginx
+supervisorctl reread
+supervisorctl update
+supervisorctl restart django
+
+# Restart Cloud Ops Agent
 systemctl restart google-cloud-ops-agent
+
+# Set up logrotate for Django logs
+cat > /etc/logrotate.d/django << EOL
+/var/log/django/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 django django
+    sharedscripts
+    postrotate
+        supervisorctl restart django
+    endscript
+}
+EOL
