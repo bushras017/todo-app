@@ -80,11 +80,13 @@ EOF
 resource "google_compute_instance" "web_server" {
   name         = "web-server"
   machine_type = "e2-medium"
-  tags         = ["web-server"]
+  tags         = ["web-server", "http-server", "https-server"]
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
       image = "ubuntu-os-cloud/ubuntu-2004-lts"
+      size  = 30
     }
   }
 
@@ -109,6 +111,8 @@ resource "google_compute_instance" "web_server" {
   }
 
   metadata = {
+    enable-oslogin = "TRUE"
+    enable-guest-attributes = "TRUE"
     db_private_ip       = google_compute_instance.db_server.network_interface[0].network_ip
     email_recipients    = join(",", var.alert_email_recipients)
     notification_email  = var.notification_email
@@ -157,7 +161,7 @@ sudo chown -R django:django /opt/django-app
 sudo chown -R django:django /var/log/django
 
 # Create supervisor configuration for Django
-sudo tee /etc/supervisor/conf.d/django.conf << 'SUPCONF'
+cat > /etc/supervisor/conf.d/django.conf << SUPCONF
 [program:django]
 command=/opt/django-app/venv/bin/gunicorn --workers 3 --bind unix:/tmp/django.sock todoApp.wsgi:application
 directory=/opt/django-app
@@ -171,7 +175,7 @@ environment=PATH="/opt/django-app/venv/bin"
 SUPCONF
 
 # Configure Nginx
-sudo tee /etc/nginx/sites-available/django << 'NGINX'
+cat > /etc/nginx/sites-available/django << NGINX
 server {
     listen 8000;
     server_name _;
@@ -185,10 +189,10 @@ server {
 
     location / {
         proxy_pass http://unix:/tmp/django.sock;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 NGINX
@@ -198,14 +202,14 @@ sudo ln -sf /etc/nginx/sites-available/django /etc/nginx/sites-enabled/
 sudo rm -f /etc/nginx/sites-enabled/default
 
 # Create Django environment file
-sudo tee /opt/django-app/.env << 'ENVFILE'
+cat > /opt/django-app/.env << ENVFILE
 DEBUG=False
 DJANGO_SECRET_KEY='$(openssl rand -hex 32)'
-ALLOWED_HOSTS=\${EXTERNAL_IP},localhost,127.0.0.1
+ALLOWED_HOSTS=${EXTERNAL_IP},localhost,127.0.0.1
 DB_NAME=django_db
 DB_USER=django_user
-DB_PASSWORD=\${DB_PASSWORD}
-DB_HOST=\${DB_PRIVATE_IP}
+DB_PASSWORD=${DB_PASSWORD}
+DB_HOST=${DB_PRIVATE_IP}
 DB_PORT=5432
 ENVFILE
 
@@ -219,12 +223,12 @@ source venv/bin/activate
 sudo python manage.py collectstatic --noinput
 
 # Configure Prometheus
-sudo tee /etc/default/prometheus << 'PROMCONF'
+cat > /etc/default/prometheus << PROMCONF
 ARGS="--web.listen-address=0.0.0.0:9090"
 PROMCONF
 
 # Setup Prometheus config
-sudo tee /etc/prometheus/prometheus.yml << 'PROMYML'
+cat > /etc/prometheus/prometheus.yml << PROMYML
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -235,33 +239,33 @@ rule_files:
 scrape_configs:
   - job_name: 'django'
     static_configs:
-      - targets: ['\${EXTERNAL_IP}:8000']
+      - targets: ['${EXTERNAL_IP}:8000']
         labels:
           instance: 'web-server'
 
   - job_name: 'node'
     static_configs:
-      - targets: ['\${EXTERNAL_IP}:9100']
+      - targets: ['${EXTERNAL_IP}:9100']
         labels:
           instance: 'web-server'
-      - targets: ['\${DB_PRIVATE_IP}:9100']
+      - targets: ['${DB_PRIVATE_IP}:9100']
         labels:
           instance: 'db-server'
 
   - job_name: 'postgres'
     static_configs:
-      - targets: ['\${DB_PRIVATE_IP}:9187']
+      - targets: ['${DB_PRIVATE_IP}:9187']
         labels:
           instance: 'db-server'
 
 alerting:
   alertmanagers:
     - static_configs:
-        - targets: ['\${EXTERNAL_IP}:9093']
+        - targets: ['${EXTERNAL_IP}:9093']
 PROMYML
 
 # Configure alert rules
-sudo tee /etc/prometheus/rules/alerts.yml << 'ALERTS'
+cat > /etc/prometheus/rules/alerts.yml << ALERTS
 groups:
 - name: django_alerts
   rules:
@@ -272,7 +276,7 @@ groups:
       severity: warning
     annotations:
       summary: High CPU Usage
-      description: "CPU usage is above 80% on {{ \$labels.instance }}"
+      description: "CPU usage is above 80% on {{ $labels.instance }}"
 
   - alert: DiskSpaceLow
     expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes * 100 > 85
@@ -281,7 +285,7 @@ groups:
       severity: warning
     annotations:
       summary: Low Disk Space
-      description: "Disk usage is above 85% on {{ \$labels.instance }}"
+      description: "Disk usage is above 85% on {{ $labels.instance }}"
 
   - alert: PostgresDown
     expr: pg_up == 0
@@ -290,7 +294,7 @@ groups:
       severity: critical
     annotations:
       summary: PostgreSQL Server Down
-      description: "PostgreSQL server is down on {{ \$labels.instance }}"
+      description: "PostgreSQL server is down on {{ $labels.instance }}"
 
   - alert: HighFailedLogins
     expr: rate(django_http_responses_total{status="401"}[5m]) > 1
@@ -303,17 +307,17 @@ groups:
 ALERTS
 
 # Configure Alertmanager
-sudo tee /etc/default/alertmanager << 'AMCONF'
+cat > /etc/default/alertmanager << AMCONF
 ARGS="--web.listen-address=0.0.0.0:9093"
 AMCONF
 
-sudo tee /etc/alertmanager/alertmanager.yml << 'AMYML'
+cat > /etc/alertmanager/alertmanager.yml << AMYML
 global:
   resolve_timeout: 5m
-  smtp_from: '\${NOTIFICATION_EMAIL}'
+  smtp_from: '${NOTIFICATION_EMAIL}'
   smtp_smarthost: 'smtp.gmail.com:587'
-  smtp_auth_username: '\${NOTIFICATION_EMAIL}'
-  smtp_auth_password: '\${EMAIL_APP_PASSWORD}'
+  smtp_auth_username: '${NOTIFICATION_EMAIL}'
+  smtp_auth_password: '${EMAIL_APP_PASSWORD}'
   smtp_require_tls: true
 
 route:
@@ -332,17 +336,17 @@ route:
 receivers:
   - name: 'email-notifications'
     email_configs:
-      - to: '\${EMAIL_RECIPIENTS}'
+      - to: '${EMAIL_RECIPIENTS}'
         send_resolved: true
 AMYML
 
 # Configure node_exporter
-sudo tee /etc/default/prometheus-node-exporter << 'NODEEXP'
+cat > /etc/default/prometheus-node-exporter << NODEEXP
 ARGS="--web.listen-address=0.0.0.0:9100"
 NODEEXP
 
 # Configure Cloud Ops Agent
-sudo tee /etc/google-cloud-ops-agent/config.yaml << 'OPSCONF'
+cat > /etc/google-cloud-ops-agent/config.yaml << OPSCONF
 logging:
   receivers:
     django_app:
@@ -361,8 +365,8 @@ metrics:
       type: prometheus
       collection_interval: 30s
       endpoints:
-        - http://\${INSTANCE_IP}:9090/metrics
-        - http://\${INSTANCE_IP}:9100/metrics  # Node Exporter metrics
+        - http://${INSTANCE_IP}:9090/metrics
+        - http://${INSTANCE_IP}:9100/metrics  # Node Exporter metrics
   service:
     pipelines:
       default:
@@ -392,7 +396,7 @@ sudo supervisorctl restart django
 sudo systemctl restart google-cloud-ops-agent
 
 # Set up logrotate for Django logs
-sudo tee /etc/logrotate.d/django << 'LOGROT'
+cat > /etc/logrotate.d/django << LOGROT
 /var/log/django/*.log {
     daily
     rotate 14
@@ -409,7 +413,8 @@ LOGROT
 EOF
 
   service_account {
-    scopes = ["cloud-platform"]
+    email  = var.service_account_email
+    scopes = ["cloud-platform", "compute-ro", "storage-ro"]
   }
 
   depends_on = [
