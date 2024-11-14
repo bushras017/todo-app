@@ -10,14 +10,31 @@ NOTIFICATION_EMAIL=$(curl -H "Metadata-Flavor: Google" http://metadata.google.in
 EMAIL_APP_PASSWORD=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/email_app_password)
 
 # Install required packages
+<<<<<<< HEAD
+apt-get update
+apt-get install -y python3-pip python3-venv prometheus prometheus-node-exporter prometheus-alertmanager git nginx supervisor
+=======
 sudo apt-get update
 sudo apt-get install -y python3-pip python3-venv prometheus prometheus-node-exporter prometheus-alertmanager git nginx supervisor
+>>>>>>> main
 
 # Install Google Cloud Ops Agent
 curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
 sudo bash add-google-cloud-ops-agent-repo.sh --also-install
 
 # Setup directories
+<<<<<<< HEAD
+mkdir -p /etc/prometheus/rules
+mkdir -p /var/log/prometheus
+mkdir -p /var/log/django
+mkdir -p /opt/django-app
+
+# Create django user
+useradd -r -s /bin/false django
+
+# Clone and setup Django application with proper permissions
+git clone https://github.com/bushras017/django-todo.git /opt/django-app
+=======
 sudo mkdir -p /etc/prometheus/rules
 sudo mkdir -p /var/log/prometheus
 sudo mkdir -p /var/log/django
@@ -28,9 +45,21 @@ sudo useradd -r -s /bin/false django
 
 # Clone and setup Django application with proper permissions
 sudo git clone https://github.com/bushras017/django-todo.git /opt/django-app
+>>>>>>> main
 cd /opt/django-app
 sudo python3 -m venv venv
 source venv/bin/activate
+<<<<<<< HEAD
+pip install -r requirements.txt
+pip install gunicorn  # Add gunicorn for production serving
+
+# Set proper ownership
+chown -R django:django /opt/django-app
+chown -R django:django /var/log/django
+
+# Create supervisor configuration for Django
+cat > /etc/supervisor/conf.d/django.conf << EOL
+=======
 sudo pip install -r requirements.txt
 sudo pip install gunicorn
 
@@ -40,6 +69,7 @@ sudo chown -R django:django /var/log/django
 
 # Create supervisor configuration for Django
 sudo tee /etc/supervisor/conf.d/django.conf << EOL
+>>>>>>> main
 [program:django]
 command=/opt/django-app/venv/bin/gunicorn --workers 3 --bind unix:/tmp/django.sock todoApp.wsgi:application
 directory=/opt/django-app
@@ -53,7 +83,11 @@ environment=PATH="/opt/django-app/venv/bin"
 EOL
 
 # Configure Nginx
+<<<<<<< HEAD
+cat > /etc/nginx/sites-available/django << EOL
+=======
 sudo tee /etc/nginx/sites-available/django << EOL
+>>>>>>> main
 server {
     listen 8000;
     server_name _;
@@ -76,11 +110,19 @@ server {
 EOL
 
 # Enable Nginx site
+<<<<<<< HEAD
+ln -sf /etc/nginx/sites-available/django /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+
+# Create Django environment file
+cat > /opt/django-app/.env << EOL
+=======
 sudo ln -sf /etc/nginx/sites-available/django /etc/nginx/sites-enabled/
 sudo rm -f /etc/nginx/sites-enabled/default
 
 # Create Django environment file
 sudo tee /opt/django-app/.env << EOL
+>>>>>>> main
 DEBUG=False
 DJANGO_SECRET_KEY='$(openssl rand -hex 32)'
 ALLOWED_HOSTS=${EXTERNAL_IP},localhost,127.0.0.1
@@ -92,13 +134,22 @@ DB_PORT=5432
 EOL
 
 # Set proper permissions for .env file
+<<<<<<< HEAD
+chown django:django /opt/django-app/.env
+chmod 600 /opt/django-app/.env
+=======
 sudo chown django:django /opt/django-app/.env
 sudo chmod 600 /opt/django-app/.env
+>>>>>>> main
 
 # Collect static files
 cd /opt/django-app
 source venv/bin/activate
+<<<<<<< HEAD
+python manage.py collectstatic --noinput
+=======
 sudo python manage.py collectstatic --noinput
+>>>>>>> main
 
 # Configure Prometheus
 sudo tee /etc/default/prometheus << EOF
@@ -252,6 +303,31 @@ metrics:
 EOF
 
 # Start services
+<<<<<<< HEAD
+systemctl daemon-reload
+systemctl enable prometheus
+systemctl start prometheus
+systemctl enable prometheus-node-exporter
+systemctl start prometheus-node-exporter
+systemctl enable prometheus-alertmanager
+systemctl start prometheus-alertmanager
+systemctl enable nginx
+systemctl start nginx
+systemctl enable supervisor
+systemctl start supervisor
+
+# Restart Nginx and Supervisor
+systemctl restart nginx
+supervisorctl reread
+supervisorctl update
+supervisorctl restart django
+
+# Restart Cloud Ops Agent
+systemctl restart google-cloud-ops-agent
+
+# Set up logrotate for Django logs
+cat > /etc/logrotate.d/django << EOL
+=======
 sudo systemctl daemon-reload
 sudo systemctl enable prometheus
 sudo systemctl start prometheus
@@ -275,6 +351,7 @@ sudo systemctl restart google-cloud-ops-agent
 
 # Set up logrotate for Django logs
 sudo tee /etc/logrotate.d/django << EOL
+>>>>>>> main
 /var/log/django/*.log {
     daily
     rotate 14

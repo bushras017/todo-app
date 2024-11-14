@@ -110,6 +110,7 @@ resource "google_compute_instance" "web_server" {
     ]
   }
 
+  # Store all configuration in metadata
   metadata = {
     enable-oslogin = "TRUE"
     enable-guest-attributes = "TRUE"
@@ -117,25 +118,45 @@ resource "google_compute_instance" "web_server" {
     email_recipients    = join(",", var.alert_email_recipients)
     notification_email  = var.notification_email
     email_app_password = var.notification_email_password
+    db_password        = var.db_password
+    startup-script-vars = <<EOF
+INSTANCE_IP=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)
+EXTERNAL_IP=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip)
+DB_PRIVATE_IP=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/db_private_ip)
+EMAIL_RECIPIENTS=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/email_recipients)
+NOTIFICATION_EMAIL=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/notification_email)
+EMAIL_APP_PASSWORD=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/email_app_password)
+DB_PASSWORD=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/db_password)
+EOF
   }
 
   metadata_startup_script = <<EOF
 #!/bin/bash
 set -e
 
-# Get instance IPs and metadata using shell variables
-INSTANCE_IP=\$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)
-EXTERNAL_IP=\$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip)
-DB_PRIVATE_IP=\$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/db_private_ip)
-EMAIL_RECIPIENTS=\$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/email_recipients)
-NOTIFICATION_EMAIL=\$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/notification_email)
-EMAIL_APP_PASSWORD=\$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/email_app_password)
-DB_PASSWORD=\$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/db_password)
+# First, source our variables
+eval "$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/startup-script-vars)"
+
+# Store variables for sub-processes
+cat > /etc/profile.d/app_vars.sh << 'VARSEOF'
+export INSTANCE_IP="${!INSTANCE_IP}"
+export EXTERNAL_IP="${!EXTERNAL_IP}"
+export DB_PRIVATE_IP="${!DB_PRIVATE_IP}"
+export EMAIL_RECIPIENTS="${!EMAIL_RECIPIENTS}"
+export NOTIFICATION_EMAIL="${!NOTIFICATION_EMAIL}"
+export EMAIL_APP_PASSWORD="${!EMAIL_APP_PASSWORD}"
+export DB_PASSWORD="${!DB_PASSWORD}"
+VARSEOF
+
+# Source the variables
+source /etc/profile.d/app_vars.sh
 
 # Install required packages
 apt-get update
 apt-get install -y python3-pip python3-venv prometheus prometheus-node-exporter prometheus-alertmanager git nginx supervisor mailutils
+apt-get install -y python3-pip python3-venv prometheus prometheus-node-exporter prometheus-alertmanager git nginx supervisor mailutils
 
+# Install Google Cloud Ops Agent
 # Install Google Cloud Ops Agent
 curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
 bash add-google-cloud-ops-agent-repo.sh --also-install
@@ -144,39 +165,158 @@ bash add-google-cloud-ops-agent-repo.sh --also-install
 mkdir -p /etc/prometheus/rules
 mkdir -p /var/log/prometheus
 mkdir -p /var/log/django
+mkdir -p /var/log/django
 mkdir -p /opt/django-app
 
 # Create django user
 useradd -r -s /bin/false django
 
 # Clone and setup Django application
-git clone https://github.com/bushras017/django-todo.git /opt/django-app
+git clone https://github.com/bushras017/django-todo.git /opt/django-app || true
 cd /opt/django-app
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-pip install gunicorn
 
-# Set proper ownership
-chown -R django:django /opt/django-app
-chown -R django:django /var/log/django
+# Configure Django environment
+cat > .env << 'EOF4'
+DEBUG=False
+DJANGO_SECRET_KEY='$(openssl rand -hex 32)'
+ALLOWED_HOSTS=${EXTERNAL_IP},localhost,127.0.0.1
+DB_NAME=django_db
+DB_USER=django_user
+DB_PASSWORD=${DB_PASSWORD}
+DB_HOST=${DB_PRIVATE_IP}
+DB_PORT=5432
+EOF4
 
-# Create supervisor configuration for Django
-cat << EOF2 > /etc/supervisor/conf.d/django.conf
-[program:django]
-command=/opt/django-app/venv/bin/gunicorn --workers 3 --bind unix:/tmp/django.sock todoApp.wsgi:application
-directory=/opt/django-app
-user=django
-group=django
-autostart=true
-autorestart=true
-stderr_logfile=/var/log/django/gunicorn.err.log
-stdout_logfile=/var/log/django/gunicorn.out.log
-environment=PATH="/opt/django-app/venv/bin"
-EOF2
+# Configure Prometheus
+cat > /etc/prometheus/prometheus.yml << 'EOF6'
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
 
-# Configure Nginx
-cat << EOF3 > /etc/nginx/sites-available/django
+rule_files:
+  - "rules/*.yml"
+
+scrape_configs:
+  - job_name: 'django'
+    static_configs:
+      - targets: ['${EXTERNAL_IP}:8000']
+      - targets: ['${EXTERNAL_IP}:8000']
+        labels:
+          instance: 'web-server'
+
+  - job_name: 'node'
+    static_configs:
+      - targets: ['${EXTERNAL_IP}:9100']
+      - targets: ['${EXTERNAL_IP}:9100']
+        labels:
+          instance: 'web-server'
+      - targets: ['${DB_PRIVATE_IP}:9100']
+      - targets: ['${DB_PRIVATE_IP}:9100']
+        labels:
+          instance: 'db-server'
+
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['${DB_PRIVATE_IP}:9187']
+      - targets: ['${DB_PRIVATE_IP}:9187']
+        labels:
+          instance: 'db-server'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['${EXTERNAL_IP}:9093']
+EOF6
+
+# Configure alert rules
+cat > /etc/prometheus/rules/alerts.yml << 'EOF7'
+groups:
+- name: django_alerts
+  rules:
+  - alert: HighCPUUsage
+    expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: High CPU Usage
+      description: "CPU usage is above 80% on {{ $labels.instance }}"
+      description: "CPU usage is above 80% on {{ $labels.instance }}"
+
+  - alert: DiskSpaceLow
+    expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes * 100 > 85
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: Low Disk Space
+      description: "Disk usage is above 85% on {{ $labels.instance }}"
+      description: "Disk usage is above 85% on {{ $labels.instance }}"
+
+  - alert: PostgresDown
+    expr: pg_up == 0
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: PostgreSQL Server Down
+      description: "PostgreSQL server is down on {{ $labels.instance }}"
+      description: "PostgreSQL server is down on {{ $labels.instance }}"
+
+  - alert: HighFailedLogins
+    expr: rate(django_http_responses_total{status="401"}[5m]) > 1
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: High Failed Login Rate
+      description: "Unusually high rate of failed login attempts"
+EOF7
+EOF7
+
+# Configure Alertmanager
+cat > /etc/alertmanager/alertmanager.yml << 'EOF8'
+global:
+  resolve_timeout: 5m
+  smtp_from: '${NOTIFICATION_EMAIL}'
+  smtp_from: '${NOTIFICATION_EMAIL}'
+  smtp_smarthost: 'smtp.gmail.com:587'
+  smtp_auth_username: '${NOTIFICATION_EMAIL}'
+  smtp_auth_password: '${EMAIL_APP_PASSWORD}'
+  smtp_auth_username: '${NOTIFICATION_EMAIL}'
+  smtp_auth_password: '${EMAIL_APP_PASSWORD}'
+  smtp_require_tls: true
+
+route:
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 1h
+  receiver: 'email-notifications'
+  routes:
+    - match:
+        severity: critical
+      group_wait: 10s
+      repeat_interval: 30m
+      receiver: 'email-notifications'
+  receiver: 'email-notifications'
+  routes:
+    - match:
+        severity: critical
+      group_wait: 10s
+      repeat_interval: 30m
+      receiver: 'email-notifications'
+
+receivers:
+  - name: 'email-notifications'
+    email_configs:
+      - to: '${EMAIL_RECIPIENTS}'
+      - to: '${EMAIL_RECIPIENTS}'
+        send_resolved: true
+EOF8
+
+# Configure nginx
+cat > /etc/nginx/sites-available/django << 'EOF9'
 server {
     listen 8000;
     server_name _;
@@ -196,301 +336,39 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
-EOF3
+EOF9
 
-# Enable Nginx site
-ln -sf /etc/nginx/sites-available/django /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default
+# Set up Django virtual environment and install requirements
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt gunicorn
 
-# Create Django environment file
-cat << EOF4 > /opt/django-app/.env
-DEBUG=False
-DJANGO_SECRET_KEY='\$(openssl rand -hex 32)'
-ALLOWED_HOSTS=\${EXTERNAL_IP},localhost,127.0.0.1
-DB_NAME=django_db
-DB_USER=django_user
-DB_PASSWORD=${DB_PASSWORD}
-DB_HOST=${DB_PRIVATE_IP}
-DB_PORT=5432
-EOF4
-
-# Set proper permissions for .env file
-chown django:django /opt/django-app/.env
+# Set proper ownership
+chown -R django:django /opt/django-app
+chown -R django:django /var/log/django
 chmod 600 /opt/django-app/.env
 
 # Collect static files
-cd /opt/django-app
-source venv/bin/activate
 python manage.py collectstatic --noinput
 
-# Configure Prometheus
-cat << EOF5 > /etc/default/prometheus
-ARGS="--web.listen-address=0.0.0.0:9090"
-EOF5
+# Enable and configure services
+ln -sf /etc/nginx/sites-available/django /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
 
-# Setup Prometheus config
-cat << EOF6 > /etc/prometheus/prometheus.yml
-global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
-
-rule_files:
-  - "rules/*.yml"
-
-scrape_configs:
-  - job_name: 'django'
-    static_configs:
-      - targets: ['${EXTERNAL_IP}:8000']
-        labels:
-          instance: 'web-server'
-
-  - job_name: 'node'
-    static_configs:
-      - targets: ['${EXTERNAL_IP}:9100']
-        labels:
-          instance: 'web-server'
-      - targets: ['${DB_PRIVATE_IP}:9100']
-        labels:
-          instance: 'db-server'
-
-  - job_name: 'postgres'
-    static_configs:
-      - targets: ['${DB_PRIVATE_IP}:9187']
-        labels:
-          instance: 'db-server'
-
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets: ['\${EXTERNAL_IP}:9093']
-EOF6
-
-# Configure alert rules
-cat << EOF7 > /etc/prometheus/rules/alerts.yml
-groups:
-- name: django_alerts
-  rules:
-  - alert: HighCPUUsage
-    expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
-    for: 5m
-    labels:
-      severity: warning
-    annotations:
-      summary: High CPU Usage
-      description: "CPU usage is above 80% on {{ $labels.instance }}"
-
-  - alert: DiskSpaceLow
-    expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes * 100 > 85
-    for: 5m
-    labels:
-      severity: warning
-    annotations:
-      summary: Low Disk Space
-      description: "Disk usage is above 85% on {{ $labels.instance }}"
-
-  - alert: PostgresDown
-    expr: pg_up == 0
-    for: 5m
-    labels:
-      severity: critical
-    annotations:
-      summary: PostgreSQL Server Down
-      description: "PostgreSQL server is down on {{ $labels.instance }}"
-
-  - alert: HighFailedLogins
-    expr: rate(django_http_responses_total{status="401"}[5m]) > 1
-    for: 5m
-    labels:
-      severity: warning
-    annotations:
-      summary: High Failed Login Rate
-      description: "Unusually high rate of failed login attempts"
-EOF7
-
-# Configure Alertmanager
-cat << EOF8 > /etc/default/alertmanager
-ARGS="--web.listen-address=0.0.0.0:9093"
-EOF8
-
-cat << EOF9 > /etc/alertmanager/alertmanager.yml
-global:
-  resolve_timeout: 5m
-  smtp_from: '${NOTIFICATION_EMAIL}'
-  smtp_smarthost: 'smtp.gmail.com:587'
-  smtp_auth_username: '${NOTIFICATION_EMAIL}'
-  smtp_auth_password: '${EMAIL_APP_PASSWORD}'
-  smtp_require_tls: true
-
-route:
-  group_by: ['alertname', 'severity']
-  group_wait: 30s
-  group_interval: 5m
-  repeat_interval: 1h
-  receiver: 'email-notifications'
-  routes:
-    - match:
-        severity: critical
-      group_wait: 10s
-      repeat_interval: 30m
-      receiver: 'email-notifications'
-
-receivers:
-  - name: 'email-notifications'
-    email_configs:
-      - to: '${EMAIL_RECIPIENTS}'
-        send_resolved: true
-EOF9
-
-# Configure node_exporter
-cat << EOF10 > /etc/default/prometheus-node-exporter
-ARGS="--web.listen-address=0.0.0.0:9100"
-EOF10
-
-# Configure Cloud Ops Agent
-cat << EOF11 > /etc/google-cloud-ops-agent/config.yaml
-logging:
-  receivers:
-    django_app:
-      type: files
-      include_paths:
-        - /var/log/django.log
-  service:
-    pipelines:
-      django:
-        receivers: [django_app]
-metrics:
-  receivers:
-    hostmetrics:
-      type: hostmetrics
-    prometheus:
-      type: prometheus
-      collection_interval: 30s
-      endpoints:
-        - http://${INSTANCE_IP}:9090/metrics
-        - http://${INSTANCE_IP}:9100/metrics  # Node Exporter metrics
-  service:
-    pipelines:
-      default:
-        receivers: [hostmetrics, prometheus]
-EOF11
-
-# Install and run Lynis security scan
-cat << EOF12 > /opt/security_scan.sh
-#!/bin/bash
-# Install Lynis
-cd /opt
-git clone https://github.com/CISOfy/lynis
-cd lynis
-
-# Run scan and save results
-./lynis audit system --cronjob > /var/log/lynis_scan.log 2>&1
-REPORT_FILE="/var/log/lynis-report.dat"
-
-# Check if scan completed and send email notification
-if [ -f "\${REPORT_FILE}" ]; then
-    # Parse report file for warnings and suggestions
-    WARNINGS=\$(grep "warning\[]" \${REPORT_FILE} | wc -l)
-    SUGGESTIONS=\$(grep "suggestion\[]" \${REPORT_FILE} | wc -l)
-    REPORT_DATE=\$(date '+%Y-%m-%d %H:%M:%S')
-    HOSTNAME=\$(hostname)
-    INSTANCE_IP=\$(curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)
-    EMAIL_RECIPIENTS=\$(curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/email_recipients)
-
-    # Create email content
-    EMAIL_CONTENT="Lynis Security Scan Report - \${REPORT_DATE}
-
-Host: \${HOSTNAME}
-IP Address: \${INSTANCE_IP}
-
-Summary:
-- Warnings found: \${WARNINGS}
-- Suggestions: \${SUGGESTIONS}
-
-Full scan log is available at: /var/log/lynis_scan.log
-Detailed report data: /var/log/lynis-report.dat
-
-=== Recent Warnings ==="
-
-    # Create email file
-    echo "\$EMAIL_CONTENT" > /tmp/lynis_email.txt
-    grep "warning\[]" \${REPORT_FILE} >> /tmp/lynis_email.txt
-    echo -e "\n=== Suggestions ===" >> /tmp/lynis_email.txt
-    grep "suggestion\[]" \${REPORT_FILE} >> /tmp/lynis_email.txt
-
-    # Send email using sendmail
-    cat /tmp/lynis_email.txt | mail -s "Lynis Security Scan Report - \${HOSTNAME}" \${EMAIL_RECIPIENTS}
-
-    # Cleanup
-    rm /tmp/lynis_email.txt
-fi
-EOF12
-
-# Make script executable and run initial scan
-chmod +x /opt/security_scan.sh
-/opt/security_scan.sh
-
-# Set up weekly cron job for Lynis scan
-echo "0 2 * * 0 /opt/security_scan.sh" | crontab -
-
-# Add Lynis log to logrotate
-cat << EOF13 > /etc/logrotate.d/lynis
-/var/log/lynis*.log {
-    weekly
-    rotate 12
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 640 root root
-}
-/var/log/lynis-report.dat {
-    weekly
-    rotate 12
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 640 root root
-}
-EOF13
-
-# Start services
 systemctl daemon-reload
-systemctl enable prometheus
-systemctl start prometheus
-systemctl enable prometheus-node-exporter
-systemctl start prometheus-node-exporter
-systemctl enable prometheus-alertmanager
-systemctl start prometheus-alertmanager
-systemctl enable nginx
-systemctl start nginx
-systemctl enable supervisor
-systemctl start supervisor
 
-# Restart Nginx and Supervisor
+# Start and enable all required services
+for service in prometheus prometheus-node-exporter prometheus-alertmanager nginx supervisor; do
+    systemctl enable $service
+    systemctl start $service
+done
+
+# Final restarts to ensure all configs are loaded
 systemctl restart nginx
 supervisorctl reread
 supervisorctl update
 supervisorctl restart django
-
-# Restart Cloud Ops Agent
 systemctl restart google-cloud-ops-agent
-
-# Set up logrotate for Django logs
-cat << EOF14 > /etc/logrotate.d/django
-/var/log/django/*.log {
-    daily
-    rotate 14
-    compress
-    delaycompress
-    notifempty
-    create 0640 django django
-    sharedscripts
-    postrotate
-        supervisorctl restart django
-    endscript
-}
-EOF14
 EOF
 
   service_account {
