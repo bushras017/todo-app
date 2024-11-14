@@ -110,6 +110,7 @@ resource "google_compute_instance" "web_server" {
     ]
   }
 
+  # Store all configuration in metadata
   metadata = {
     enable-oslogin = "TRUE"
     enable-guest-attributes = "TRUE"
@@ -117,6 +118,16 @@ resource "google_compute_instance" "web_server" {
     email_recipients    = join(",", var.alert_email_recipients)
     notification_email  = var.notification_email
     email_app_password = var.notification_email_password
+    db_password        = var.db_password
+    startup-script-vars = <<EOF
+INSTANCE_IP=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)
+EXTERNAL_IP=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip)
+DB_PRIVATE_IP=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/db_private_ip)
+EMAIL_RECIPIENTS=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/email_recipients)
+NOTIFICATION_EMAIL=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/notification_email)
+EMAIL_APP_PASSWORD=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/email_app_password)
+DB_PASSWORD=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/db_password)
+EOF
   }
 
   metadata_startup_script = <<EOF
