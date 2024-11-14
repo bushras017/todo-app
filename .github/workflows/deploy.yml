@@ -50,11 +50,6 @@ jobs:
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
 
-    - name: Make init scripts executable
-      run: |
-        chmod +x deployment/scripts/init-web.sh
-        chmod +x deployment/scripts/init-db.sh
-        
     - name: Create terraform.tfvars
       run: |
         cat > terraform/terraform.tfvars << EOF
@@ -81,6 +76,7 @@ jobs:
         terraform state rm google_compute_firewall.allow_monitoring || true
         terraform state rm google_compute_firewall.allow_django || true
         terraform state rm google_compute_firewall.allow_internal || true
+        terraform state rm google_compute_firewall.blocked_ips || true
         terraform state rm google_compute_instance.db_server || true
         terraform state rm google_compute_instance.web_server || true
         terraform state rm google_bigquery_dataset.security_logs || true
@@ -164,4 +160,64 @@ jobs:
         # Then apply changes
         terraform apply -auto-approve
 
+    - name: Deploy Django App
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        # Get outputs
+        WEB_IP=$(terraform -chdir=terraform output -raw web_server_public_ip)
+        DB_IP=$(terraform -chdir=terraform output -raw db_server_private_ip)
+        
+        # Create Django environment file
+        cat > .env << EOF
+        DEBUG=False
+        DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+        DB_NAME=${{ secrets.DB_NAME }}
+        DB_USER=${{ secrets.DB_USER }}
+        DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+        DB_HOST=$DB_IP
+        DB_PORT=5432
+        ALLOWED_HOSTS=$WEB_IP,localhost,127.0.0.1
+        GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
+        EOF
 
+        # Create deployment directory
+        echo "Setting up deployment directory..."
+        DEPLOY_DIR="deploy_package"
+        mkdir -p $DEPLOY_DIR
+        
+        # Copy all necessary files while maintaining directory structure
+        cp -r manage.py requirements.txt todoApp todos staticfiles $DEPLOY_DIR/
+        cp .env $DEPLOY_DIR/
+        
+        # Create the static files directory if it doesn't exist
+        mkdir -p $DEPLOY_DIR/staticfiles
+
+        # Copy to web server
+        echo "Copying files to web server..."
+        gcloud compute ssh web-server --zone=us-central1-a --command "sudo mkdir -p /opt/django-app && sudo chmod 755 /opt/django-app"
+        gcloud compute ssh web-server --zone=us-central1-a --command "sudo rm -rf /opt/django-app/*"
+        gcloud compute scp --recurse $DEPLOY_DIR/* web-server:/opt/django-app/ --zone=us-central1-a
+        gcloud compute scp $DEPLOY_DIR/.env web-server:/opt/django-app/ --zone=us-central1-a
+
+        # Setup and start Django
+        echo "Setting up Django environment..."
+        gcloud compute ssh web-server --zone=us-central1-a --command "
+          cd /opt/django-app && \
+          sudo chown -R \$USER:\$USER . && \
+          python3 -m venv venv && \
+          source venv/bin/activate && \
+          pip install -r requirements.txt && \
+          python manage.py migrate && \
+          python manage.py collectstatic --noinput && \
+          # Kill any existing Django process
+          pkill -f 'python manage.py runserver' || true && \
+          # Start Django in background with nohup
+          nohup python manage.py runserver 0.0.0.0:8000 > django.log 2>&1 & \
+          # Wait a bit and check if process is running
+          sleep 5 && \
+          if pgrep -f 'python manage.py runserver' > /dev/null; then
+            echo 'Django server started successfully'
+          else
+            echo 'Failed to start Django server' >&2
+            exit 1
+          fi"
