@@ -1,0 +1,23 @@
+[Unit]
+Description=Gunicorn daemon for Django application
+After=network.target
+
+[Service]
+User=USER_PLACEHOLDER
+Group=USER_PLACEHOLDER
+WorkingDirectory=/opt/django-app
+ExecStart=/opt/django-app/venv/bin/python3 -m gunicorn \
+    --workers 3 \
+    --bind 0.0.0.0:8000 \
+    --access-logfile /opt/django-app/logs/access.log \
+    --error-logfile /opt/django-app/logs/error.log \
+    --capture-output \
+    --log-level debug \
+    todoApp.wsgi:application
+Environment=PYTHONPATH=/opt/django-app
+Environment=DJANGO_SETTINGS_MODULE=todoApp.settings
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

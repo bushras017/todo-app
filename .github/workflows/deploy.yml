@@ -195,7 +195,7 @@ jobs:
 
           # Prepare Gunicorn service file
           echo "Preparing Gunicorn service file..."
-          cp deployment/gunicorn.service $DEPLOY_DIR/
+          cp gunicorn.service $DEPLOY_DIR/
           sed -i "s/USER_PLACEHOLDER/$INSTANCE_USER/g" $DEPLOY_DIR/gunicorn.service
 
           # Copy files to web server
