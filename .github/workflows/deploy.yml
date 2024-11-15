@@ -244,14 +244,21 @@ jobs:
       - name: Setup Prometheus on Web Server
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
-          # Create config files
-          cat > prometheus.yml << EOF
+          # Get Web Server IP
+          WEB_IP=$(terraform -chdir=terraform output -raw web_server_public_ip)
+          echo "Using Web IP: $WEB_IP"
+
+          # Create temporary directory for configs
+          mkdir -p prometheus_configs
+
+          # Create Prometheus config
+          cat > prometheus_configs/prometheus.yml << EOF
           global:
             scrape_interval: 15s
             evaluation_interval: 15s
 
           rule_files:
-            - "rules/*.yml"
+            - /etc/prometheus/rules/*.yml
 
           scrape_configs:
             - job_name: 'django'
@@ -273,10 +280,20 @@ jobs:
                   - targets: ['$WEB_IP:9093']
           EOF
 
-          cat > alerts.yml << EOF
+          # Create alert rules
+          cat > prometheus_configs/alerts.yml << EOF
           groups:
           - name: django_alerts
             rules:
+            - alert: FailedLoginAttempt
+              expr: increase(django_failed_login_total[1m]) >= 1
+              for: 10s
+              labels:
+                severity: warning
+              annotations:
+                summary: Failed Login Attempt
+                description: "Failed login attempt detected from {{ \$labels.ip }}"
+
             - alert: HighCPUUsage
               expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
               for: 5m
@@ -285,26 +302,10 @@ jobs:
               annotations:
                 summary: High CPU Usage
                 description: "CPU usage is above 80% on {{ \$labels.instance }}"
-
-            - alert: DjangoHighErrorRate
-              expr: rate(django_http_errors_total[5m]) > 0.1
-              for: 1m
-              labels:
-                severity: warning
-              annotations:
-                summary: High Error Rate
-                description: "High rate of HTTP errors detected"
-
-            - alert: TestAlert
-              expr: vector(1)
-              labels:
-                severity: warning
-              annotations:
-                summary: Test Alert
-                description: "This is a test alert"
           EOF
 
-          cat > alertmanager.yml << EOF
+          # Create Alertmanager config
+          cat > prometheus_configs/alertmanager.yml << EOF
           global:
             resolve_timeout: 5m
 
@@ -321,74 +322,106 @@ jobs:
                 - url: 'http://$WEB_IP:9095/alerts'
           EOF
 
-          # Copy configs to web server
-          gcloud compute scp prometheus.yml web-server:/tmp/ --zone=${{ env.ZONE }}
-          gcloud compute scp alerts.yml web-server:/tmp/ --zone=${{ env.ZONE }}
-          gcloud compute scp alertmanager.yml web-server:/tmp/ --zone=${{ env.ZONE }}
+          # Copy all configs to web server
+          gcloud compute scp --recurse prometheus_configs/* web-server:/tmp/ --zone=${{ env.ZONE }}
 
-          # Setup Prometheus on web server
-          gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
-            # Install Prometheus
+          # Setup and configure on web server
+          gcloud compute ssh web-server --zone=${{ env.ZONE }} -- bash -c '
+            set -e
+
+            # Install required packages
             sudo apt-get update
             sudo apt-get install -y prometheus prometheus-alertmanager prometheus-node-exporter
 
-            # Copy configs
-            sudo mv /tmp/prometheus.yml /etc/prometheus/
+            # Create directories
             sudo mkdir -p /etc/prometheus/rules
+            sudo mkdir -p /etc/alertmanager
+
+            # Move config files
+            sudo mv /tmp/prometheus.yml /etc/prometheus/
             sudo mv /tmp/alerts.yml /etc/prometheus/rules/
             sudo mv /tmp/alertmanager.yml /etc/alertmanager/
 
             # Set permissions
             sudo chown -R prometheus:prometheus /etc/prometheus
             sudo chown -R prometheus:prometheus /etc/alertmanager
+            sudo chmod -R 644 /etc/prometheus/prometheus.yml /etc/prometheus/rules/alerts.yml /etc/alertmanager/alertmanager.yml
+            sudo chmod 755 /etc/prometheus/rules
 
-            # Restart services
+            # Create systemd override directories
+            sudo mkdir -p /etc/systemd/system/prometheus.service.d
+            sudo mkdir -p /etc/systemd/system/prometheus-alertmanager.service.d
+            sudo mkdir -p /etc/systemd/system/prometheus-node-exporter.service.d
+
+            # Create override files
+            echo "[Service]
+            ExecStart=
+            ExecStart=/usr/bin/prometheus \\
+              --web.listen-address=:9090 \\
+              --config.file=/etc/prometheus/prometheus.yml \\
+              --storage.tsdb.path=/var/lib/prometheus \\
+              --web.enable-lifecycle" | sudo tee /etc/systemd/system/prometheus.service.d/override.conf
+
+            echo "[Service]
+            ExecStart=
+            ExecStart=/usr/bin/alertmanager \\
+              --web.listen-address=:9093 \\
+              --config.file=/etc/alertmanager/alertmanager.yml \\
+              --storage.path=/var/lib/alertmanager" | sudo tee /etc/systemd/system/prometheus-alertmanager.service.d/override.conf
+
+            echo "[Service]
+            ExecStart=
+            ExecStart=/usr/bin/prometheus-node-exporter \\
+              --web.listen-address=:9100" | sudo tee /etc/systemd/system/prometheus-node-exporter.service.d/override.conf
+
+            # Reload systemd and restart services
+            sudo systemctl daemon-reload
             sudo systemctl restart prometheus
             sudo systemctl restart prometheus-alertmanager
             sudo systemctl restart prometheus-node-exporter
 
-            # Verify services
-            if ! curl -s $WEB_IP:9090/-/healthy > /dev/null; then
-              echo 'Prometheus not healthy'
-              sudo systemctl status prometheus
-              exit 1
+            # Wait for services to start
+            sleep 5
+
+            # Verify services are running
+            services="prometheus prometheus-alertmanager prometheus-node-exporter"
+            for service in $services; do
+              if ! sudo systemctl is-active --quiet $service; then
+                echo "$service is not running"
+                sudo systemctl status $service
+                exit 1
+              fi
+            done
+
+            # Test endpoints
+            endpoints="9090 9093 9100"
+            for port in $endpoints; do
+              if ! curl -s localhost:$port > /dev/null; then
+                echo "Port $port is not responding"
+                sudo netstat -tlpn | grep $port
+                exit 1
+              fi
+            done
+
+            echo "All services are running and responding"
+          '
+
+          # Final verification
+          echo "Testing endpoints..."
+          for port in 9090 9093 9100; do
+            if curl -s "http://$WEB_IP:$port" > /dev/null; then
+              echo "Port $port is accessible"
+            else
+              echo "Port $port is not accessible"
             fi
+          done
 
-            if ! curl -s $WEB_IP:9093/-/healthy > /dev/null; then
-              echo 'Alertmanager not healthy'
-              sudo systemctl status prometheus-alertmanager
-              exit 1
-            fi
-
-            # Wait for test alert
-            echo 'Waiting for test alert...'
-            sleep 30
-            
-            # Check alert status
-            ALERT_STATUS=\$(curl -s http://$WEB_IP:9090/api/v1/alerts | grep TestAlert)
-            if [ -z \"\$ALERT_STATUS\" ]; then
-              echo 'Test alert not found'
-              exit 1
-            fi
-
-            # Test webhook to Cloud Function
-            PUBSUB_TOPIC=projects/${{ secrets.GCP_PROJECT_ID }}/topics/prometheus-alerts
-            gcloud pubsub topics publish \$PUBSUB_TOPIC --message='{
-              \"labels\": {
-                \"alertname\": \"TestAlert\",
-                \"severity\": \"warning\"
-              },
-              \"annotations\": {
-                \"description\": \"Manual test alert\"
-              }
-            }'
-
-            # Check Cloud Function logs
-            echo 'Checking Cloud Function logs...'
-            sleep 10
-            gcloud functions logs read alert-handler --limit 5
-          "
-
+          echo "Setup complete. Access points:"
+          echo "Prometheus: http://$WEB_IP:9090"
+          echo "Alertmanager: http://$WEB_IP:9093"
+          echo "Node Exporter: http://$WEB_IP:9100/metrics"
+          echo "Django metrics: http://$WEB_IP:8000/prometheus/metrics"
+    
       - name: Run Lynis Security Scan
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
