@@ -2,9 +2,9 @@ name: Deploy Infrastructure
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -16,258 +16,236 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Auth to GCP
-      id: auth
-      uses: google-github-actions/auth@v2
-      with:
-        credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - name: Auth to GCP
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-    - name: Set up Cloud SDK
-      uses: google-github-actions/setup-gcloud@v2
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
 
-    - name: Extract Service Account Email
-      id: sa-email
-      run: |
-        SA_EMAIL=$(echo '${{ secrets.GCP_SA_KEY }}' | jq -r '.client_email')
-        echo "SA_EMAIL=$SA_EMAIL" >> $GITHUB_ENV
+      - name: Extract Service Account Email
+        id: sa-email
+        run: |
+          SA_EMAIL=$(echo '${{ secrets.GCP_SA_KEY }}' | jq -r '.client_email')
+          echo "SA_EMAIL=$SA_EMAIL" >> $GITHUB_ENV
 
-    - name: Setup Additional IAM Permissions
-      run: |
-        gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
-          --member="serviceAccount:${{ env.SA_EMAIL }}" \
-          --role="roles/storage.admin"
+      - name: Setup Additional IAM Permissions
+        run: |
+          gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
+            --member="serviceAccount:${{ env.SA_EMAIL }}" \
+            --role="roles/storage.admin"
 
-        gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
-          --member="serviceAccount:${{ env.SA_EMAIL }}" \
-          --role="roles/bigquery.dataEditor"
-        
-        gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
-          --member="serviceAccount:${{ env.SA_EMAIL }}" \
-          --role="roles/logging.configWriter"
+          gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
+            --member="serviceAccount:${{ env.SA_EMAIL }}" \
+            --role="roles/bigquery.dataEditor"
+          
+          gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
+            --member="serviceAccount:${{ env.SA_EMAIL }}" \
+            --role="roles/logging.configWriter"
 
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
 
-    - name: Create terraform.tfvars
-      run: |
-        cat > terraform/terraform.tfvars << EOF
-        project_id = "${{ secrets.GCP_PROJECT_ID }}"
-        region = "${{ env.REGION }}"
-        zone = "${{ env.ZONE }}"
-        db_password = "${{ secrets.DB_PASSWORD }}"
-        notification_email = "${{ secrets.NOTIFICATION_EMAIL }}"
-        notification_email_password = "${{ secrets.EMAIL_APP_PASSWORD }}"
-        alert_email_recipients = ${{ secrets.ALERT_EMAILS }}
-        service_account_email = "${{ env.SA_EMAIL }}"
-        EOF
+      - name: Create terraform.tfvars
+        run: |
+          cat > terraform/terraform.tfvars << EOF
+          project_id = "${{ secrets.GCP_PROJECT_ID }}"
+          region = "${{ env.REGION }}"
+          zone = "${{ env.ZONE }}"
+          db_password = "${{ secrets.DB_PASSWORD }}"
+          notification_email = "${{ secrets.NOTIFICATION_EMAIL }}"
+          notification_email_password = "${{ secrets.EMAIL_APP_PASSWORD }}"
+          alert_email_recipients = ${{ secrets.ALERT_EMAILS }}
+          service_account_email = "${{ env.SA_EMAIL }}"
+          EOF
 
-    - name: Terraform Init
-      working-directory: ./terraform
-      run: terraform init
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: terraform init
 
-    - name: Terraform Validate
-      working-directory: ./terraform
-      run: terraform validate
+      - name: Terraform Validate
+        working-directory: ./terraform
+        run: terraform validate
 
-    - name: Clean and Import Resources
-      working-directory: ./terraform
-      run: |
-        # Remove existing state
-        terraform state rm google_compute_network.vpc || true
-        terraform state rm google_compute_subnetwork.subnet || true
-        terraform state rm google_compute_firewall.allow_monitoring || true
-        terraform state rm google_compute_firewall.allow_django || true
-        terraform state rm google_compute_firewall.allow_internal || true
-        terraform state rm google_compute_instance.db_server || true
-        terraform state rm google_compute_instance.web_server || true
-        terraform state rm google_bigquery_dataset.security_logs || true
-        terraform state rm google_pubsub_topic.prometheus_alerts || true
-        terraform state rm google_storage_bucket.function_bucket || true
-        terraform state rm google_cloudfunctions_function.alert_handler || true
-        
-        # Import resources
-        echo "Importing VPC..."
-        terraform import google_compute_network.vpc \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/networks/devsecops-vpc" || true
-        
-        echo "Importing subnet..."
-        terraform import google_compute_subnetwork.subnet \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/regions/${{ env.REGION }}/subnetworks/devsecops-subnet" || true
-        
-        echo "Importing firewall rules..."
-        terraform import google_compute_firewall.allow_monitoring \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-monitoring" || true
-        
-        terraform import google_compute_firewall.allow_django \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-django" || true
-        
-        terraform import google_compute_firewall.allow_internal \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-internal" || true
-        
-        echo "Importing compute instances..."
-        terraform import google_compute_instance.db_server \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/db-server" || true
-        
-        terraform import google_compute_instance.web_server \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/web-server" || true
-        
-        echo "Importing BigQuery dataset..."
-        terraform import google_bigquery_dataset.security_logs \
-          "${{ secrets.GCP_PROJECT_ID }}:security_logs" || true
-        
-        echo "Importing Pub/Sub topic..."
-        terraform import google_pubsub_topic.prometheus_alerts \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/topics/prometheus-alerts" || true
-        
-        echo "Importing storage bucket..."
-        terraform import google_storage_bucket.function_bucket \
-          "${{ secrets.GCP_PROJECT_ID }}-functions" || true
-        
-        echo "Importing cloud function..."
-        terraform import google_cloudfunctions_function.alert_handler \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/locations/${{ env.REGION }}/functions/alert-handler" || true
-        
-        # Show the current state
-        echo "Current Terraform State:"
-        terraform state list
+      - name: Clean and Import Resources
+        working-directory: ./terraform
+        run: |
+          # Remove existing state
+          terraform state rm google_compute_network.vpc || true
+          terraform state rm google_compute_subnetwork.subnet || true
+          terraform state rm google_compute_firewall.allow_monitoring || true
+          terraform state rm google_compute_firewall.allow_django || true
+          terraform state rm google_compute_firewall.allow_internal || true
+          terraform state rm google_compute_instance.db_server || true
+          terraform state rm google_compute_instance.web_server || true
+          terraform state rm google_bigquery_dataset.security_logs || true
+          terraform state rm google_pubsub_topic.prometheus_alerts || true
+          terraform state rm google_storage_bucket.function_bucket || true
+          terraform state rm google_cloudfunctions_function.alert_handler || true
+          
+          # Import resources
+          echo "Importing VPC..."
+          terraform import google_compute_network.vpc \
+            "projects/${{ secrets.GCP_PROJECT_ID }}/global/networks/devsecops-vpc" || true
+          
+          echo "Importing subnet..."
+          terraform import google_compute_subnetwork.subnet \
+            "projects/${{ secrets.GCP_PROJECT_ID }}/regions/${{ env.REGION }}/subnetworks/devsecops-subnet" || true
+          
+          echo "Importing firewall rules..."
+          terraform import google_compute_firewall.allow_monitoring \
+            "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-monitoring" || true
+          
+          terraform import google_compute_firewall.allow_django \
+            "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-django" || true
+          
+          terraform import google_compute_firewall.allow_internal \
+            "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-internal" || true
+          
+          echo "Importing compute instances..."
+          terraform import google_compute_instance.db_server \
+            "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/db-server" || true
+          
+          terraform import google_compute_instance.web_server \
+            "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/web-server" || true
+          
+          echo "Importing BigQuery dataset..."
+          terraform import google_bigquery_dataset.security_logs \
+            "${{ secrets.GCP_PROJECT_ID }}:security_logs" || true
+          
+          echo "Importing Pub/Sub topic..."
+          terraform import google_pubsub_topic.prometheus_alerts \
+            "projects/${{ secrets.GCP_PROJECT_ID }}/topics/prometheus-alerts" || true
+          
+          echo "Importing storage bucket..."
+          terraform import google_storage_bucket.function_bucket \
+            "${{ secrets.GCP_PROJECT_ID }}-functions" || true
+          
+          echo "Importing cloud function..."
+          terraform import google_cloudfunctions_function.alert_handler \
+            "projects/${{ secrets.GCP_PROJECT_ID }}/locations/${{ env.REGION }}/functions/alert-handler" || true
+          
+          # Show the current state
+          echo "Current Terraform State:"
+          terraform state list
 
-    - name: Terraform Plan
-      if: github.event_name == 'pull_request'
-      working-directory: ./terraform
-      run: terraform plan
+      - name: Terraform Plan
+        if: github.event_name == 'pull_request'
+        working-directory: ./terraform
+        run: terraform plan
 
-    - name: Prepare Cloud Function
-      run: |
-        if [ -d "cloud_function" ]; then
-          cd cloud_function
-          zip -r ../terraform/function.zip ./*
-        else
-          echo "Cloud function directory not found. Creating empty function.zip"
-          touch empty.txt
-          zip terraform/function.zip empty.txt
-          rm empty.txt
-        fi
+      - name: Prepare Cloud Function
+        run: |
+          if [ -d "cloud_function" ]; then
+            cd cloud_function
+            zip -r ../terraform/function.zip ./*
+          else
+            echo "Cloud function directory not found. Creating empty function.zip"
+            touch empty.txt
+            zip terraform/function.zip empty.txt
+            rm empty.txt
+          fi
 
-    - name: Terraform Apply
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      run: |
-        cd terraform
-        # First refresh the state
-        terraform apply -refresh-only -auto-approve || true
-        
-        # Then apply changes
-        terraform apply -auto-approve
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          cd terraform
+          # First refresh the state
+          terraform apply -refresh-only -auto-approve || true
+          
+          # Then apply changes
+          terraform apply -auto-approve
 
-    - name: Deploy Django App
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      run: |
-        # Get outputs
-        WEB_IP=$(terraform -chdir=terraform output -raw web_server_public_ip)
-        DB_IP=$(terraform -chdir=terraform output -raw db_server_private_ip)
-        
-        # Create Django environment file
-        cat > .env << EOF
-        DEBUG=False
-        DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
-        DB_NAME=${{ secrets.DB_NAME }}
-        DB_USER=${{ secrets.DB_USER }}
-        DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-        DB_HOST=$DB_IP
-        DB_PORT=5432
-        ALLOWED_HOSTS=$WEB_IP,localhost,127.0.0.1
-        GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
-        EOF
+      - name: Deploy Django App
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          # Get outputs
+          WEB_IP=$(terraform -chdir=terraform output -raw web_server_public_ip)
+          DB_IP=$(terraform -chdir=terraform output -raw db_server_private_ip)
+          
+          # Create Django environment file
+          cat > .env << EOF
+          DEBUG=False
+          DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+          DB_NAME=${{ secrets.DB_NAME }}
+          DB_USER=${{ secrets.DB_USER }}
+          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+          DB_HOST=$DB_IP
+          DB_PORT=5432
+          ALLOWED_HOSTS=$WEB_IP,localhost,127.0.0.1
+          GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
+          EOF
 
-        # Create deployment directory
-        echo "Setting up deployment directory..."
-        DEPLOY_DIR="deploy_package"
-        mkdir -p $DEPLOY_DIR
-        
-        # Copy all necessary files while maintaining directory structure
-        cp -r manage.py requirements.txt todoApp todos staticfiles $DEPLOY_DIR/
-        cp .env $DEPLOY_DIR/
-        
-        # Create the static files directory if it doesn't exist
-        mkdir -p $DEPLOY_DIR/staticfiles
+          INSTANCE_USER=$(gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "whoami")
+          echo "Instance user is: $INSTANCE_USER"
 
-        INSTANCE_USER=$(gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "whoami")
-        echo "Instance user is: $INSTANCE_USER"
+          # Create deployment directory
+          echo "Setting up deployment directory..."
+          DEPLOY_DIR="deploy_package"
+          mkdir -p $DEPLOY_DIR
+          
+          # Copy application files
+          cp -r manage.py requirements.txt todoApp todos staticfiles $DEPLOY_DIR/
+          cp .env $DEPLOY_DIR/
+          mkdir -p $DEPLOY_DIR/staticfiles
 
-        # Then create the service file with explicit user
-        gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
-          sudo tee /etc/systemd/system/gunicorn.service << 'EOF'
-[Unit]
-Description=Gunicorn daemon for Django application
-After=network.target
+          # Prepare Gunicorn service file
+          echo "Preparing Gunicorn service file..."
+          cp deployment/gunicorn.service $DEPLOY_DIR/
+          sed -i "s/USER_PLACEHOLDER/$INSTANCE_USER/g" $DEPLOY_DIR/gunicorn.service
 
-[Service]
-User=$INSTANCE_USER
-Group=$INSTANCE_USER
-WorkingDirectory=/opt/django-app
-ExecStart=/opt/django-app/venv/bin/python3 -m gunicorn \
-    --workers 3 \
-    --bind 0.0.0.0:8000 \
-    --access-logfile /opt/django-app/logs/access.log \
-    --error-logfile /opt/django-app/logs/error.log \
-    --capture-output \
-    --log-level debug \
-    todoApp.wsgi:application
-Environment=PYTHONPATH=/opt/django-app
-Environment=DJANGO_SETTINGS_MODULE=todoApp.settings
-Restart=always
-RestartSec=5
+          # Copy files to web server
+          echo "Copying files to web server..."
+          gcloud compute scp --recurse $DEPLOY_DIR/* web-server:/opt/django-app/ --zone=${{ env.ZONE }}
+          gcloud compute scp $DEPLOY_DIR/.env web-server:/opt/django-app/ --zone=${{ env.ZONE }}
+          
+          # Setup services and application
+          gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
+            # Copy service file
+            sudo cp /opt/django-app/gunicorn.service /etc/systemd/system/
+            sudo chmod 644 /etc/systemd/system/gunicorn.service
 
-[Install]
-WantedBy=multi-user.target
-EOF
+            # Setup Django and Gunicorn
+            cd /opt/django-app && \
+            python3 -m venv venv && \
+            source venv/bin/activate && \
+            python3 -m pip install --upgrade pip && \
+            python3 -m pip install -r requirements.txt gunicorn && \
+            python3 manage.py migrate && \
+            python3 manage.py collectstatic --noinput && \
+            
+            # Start service
+            sudo systemctl daemon-reload && \
+            sudo systemctl enable gunicorn && \
+            sudo systemctl restart gunicorn"
 
-          # Verify the service file content
-          echo 'Created service file:'
-          cat /etc/systemd/system/gunicorn.service
-        "
+          # Verify the deployment
+          echo "Verifying deployment..."
+          gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
+            echo '=== Gunicorn Service Status ==='
+            sudo systemctl status gunicorn
+            
+            if ! sudo systemctl is-active gunicorn; then
+              echo '=== Service File Content ==='
+              cat /etc/systemd/system/gunicorn.service
+              echo '=== Gunicorn Service Logs ==='
+              sudo journalctl -u gunicorn --no-pager -n 50
+              exit 1
+            fi"
 
-        # Copy files to web server
-        gcloud compute scp --recurse $DEPLOY_DIR/* web-server:/opt/django-app/ --zone=${{ env.ZONE }}
-        gcloud compute scp $DEPLOY_DIR/.env web-server:/opt/django-app/ --zone=${{ env.ZONE }}
+      - name: Run Lynis Security Scan
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          # Run Lynis on web server
+          gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
+            sudo lynis audit system --quick --no-colors > /opt/django-app/logs/lynis-web.log 2>&1"
 
-        # Setup and start Django with Gunicorn
-        gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
-          cd /opt/django-app && \
-          python3 -m venv venv && \
-          source venv/bin/activate && \
-          python3 -m pip install --upgrade pip && \
-          python3 -m pip install -r requirements.txt gunicorn && \
-          python3 manage.py migrate && \
-          python3 manage.py collectstatic --noinput && \
-          sudo systemctl daemon-reload && \
-          sudo systemctl enable gunicorn && \
-          sudo systemctl restart gunicorn"
+          # Run Lynis on db server
+          gcloud compute ssh db-server --zone=${{ env.ZONE }} --command "
+            sudo lynis audit system --quick --no-colors > /var/log/lynis-db.log 2>&1"
 
-        # Verify the service is running
-        echo "Verifying Gunicorn service status..."
-        gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
-          if ! sudo systemctl is-active gunicorn; then
-            echo 'Gunicorn failed to start. Checking logs...'
-            echo '=== Service File Content ==='
-            cat /etc/systemd/system/gunicorn.service
-            echo '=== Gunicorn Service Logs ==='
-            sudo journalctl -u gunicorn --no-pager -n 50
-            echo '=== Gunicorn Process Status ==='
-            ps aux | grep gunicorn
-            exit 1
-          fi"
-
-    - name: Run Lynis Security Scan
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      run: |
-        # Run Lynis on web server
-        gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
-          sudo lynis audit system --quick --no-colors > /opt/django-app/logs/lynis-web.log 2>&1"
-
-        # Run Lynis on db server
-        gcloud compute ssh db-server --zone=${{ env.ZONE }} --command "
-          sudo lynis audit system --quick --no-colors > /var/log/lynis-db.log 2>&1"
-
-        echo "Security scans completed and logged"
+          echo "Security scans completed and logged"
