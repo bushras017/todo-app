@@ -180,7 +180,8 @@ jobs:
           GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
           EOF
 
-          INSTANCE_USER=$(gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "whoami")
+          # Get instance user and escape any special characters
+          INSTANCE_USER=$(gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "whoami" | tr -d '\n')
           echo "Instance user is: $INSTANCE_USER"
 
           # Create deployment directory
@@ -196,7 +197,8 @@ jobs:
           # Prepare Gunicorn service file
           echo "Preparing Gunicorn service file..."
           cp gunicorn.service $DEPLOY_DIR/
-          sed -i "s/USER_PLACEHOLDER/$INSTANCE_USER/g" $DEPLOY_DIR/gunicorn.service
+          # Use perl instead of sed for more reliable string replacement
+          perl -pi -e "s/USER_PLACEHOLDER/${INSTANCE_USER}/g" "$DEPLOY_DIR/gunicorn.service"
 
           # Copy files to web server
           echo "Copying files to web server..."
