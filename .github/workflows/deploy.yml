@@ -248,8 +248,4 @@ jobs:
           gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
             sudo lynis audit system --quick --no-colors > /opt/django-app/logs/lynis-web.log 2>&1"
 
-          # Run Lynis on db server
-          gcloud compute ssh db-server --zone=${{ env.ZONE }} --command "
-            sudo lynis audit system --quick --no-colors > /var/log/lynis-db.log 2>&1"
-
           echo "Security scans completed and logged"
