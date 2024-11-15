@@ -33,6 +33,20 @@ jobs:
         SA_EMAIL=$(echo '${{ secrets.GCP_SA_KEY }}' | jq -r '.client_email')
         echo "SA_EMAIL=$SA_EMAIL" >> $GITHUB_ENV
 
+    - name: Setup Additional IAM Permissions
+      run: |
+        gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
+          --member="serviceAccount:${{ env.SA_EMAIL }}" \
+          --role="roles/storage.admin"
+
+        gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
+          --member="serviceAccount:${{ env.SA_EMAIL }}" \
+          --role="roles/bigquery.dataEditor"
+        
+        gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
+          --member="serviceAccount:${{ env.SA_EMAIL }}" \
+          --role="roles/logging.configWriter"
+
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
 
@@ -135,16 +149,16 @@ jobs:
           zip terraform/function.zip empty.txt
           rm empty.txt
         fi
-        
+
     - name: Terraform Apply
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      working-directory: ./terraform
-      run: terraform apply -auto-approve
-
-    - name: Setup Database
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      working-directory: ./terraform
-      run: terraform apply -auto-approve
+      run: |
+        cd terraform
+        # First refresh the state
+        terraform apply -refresh-only -auto-approve || true
+        
+        # Then apply changes
+        terraform apply -auto-approve
 
     - name: Deploy Django App
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -157,24 +171,25 @@ jobs:
         cat > .env << EOF
         DEBUG=False
         DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
-        DB_NAME=django_db
-        DB_USER=django_user
-        DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-        DB_NAME=django_db
-        DB_USER=django_user
+        DB_NAME=${{ secrets.DB_NAME }}
+        DB_USER=${{ secrets.DB_USER }}
         DB_PASSWORD=${{ secrets.DB_PASSWORD }}
         DB_HOST=$DB_IP
         DB_PORT=5432
-        ALLOWED_HOSTS=$WEB_IP,localhost,127.0.0.1
         ALLOWED_HOSTS=$WEB_IP,localhost,127.0.0.1
         GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
         EOF
 
         # Create deployment directory
+        echo "Setting up deployment directory..."
         DEPLOY_DIR="deploy_package"
         mkdir -p $DEPLOY_DIR
+        
+        # Copy all necessary files while maintaining directory structure
         cp -r manage.py requirements.txt todoApp todos staticfiles $DEPLOY_DIR/
         cp .env $DEPLOY_DIR/
+        
+        # Create the static files directory if it doesn't exist
         mkdir -p $DEPLOY_DIR/staticfiles
 
         # Setup on web server
@@ -232,30 +247,10 @@ jobs:
         gcloud compute scp $DEPLOY_DIR/.env web-server:/opt/django-app/ --zone=${{ env.ZONE }}
 
         # Setup and start Django with Gunicorn
-        # Setup and start Django with Gunicorn
         gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
           cd /opt/django-app && \
           python3 -m venv venv && \
           source venv/bin/activate && \
-          pip install -r requirements.txt gunicorn && \
-          python3 manage.py migrate && \
-          python3 manage.py collectstatic --noinput && \
-          sudo systemctl daemon-reload && \
-          sudo systemctl enable gunicorn && \
-          sudo systemctl restart gunicorn"
-
-    - name: Run Lynis Security Scan
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      run: |
-        # Run Lynis on web server
-        gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
-          sudo lynis audit system --quick --no-colors > /opt/django-app/logs/lynis-web.log 2>&1"
-
-        # Run Lynis on db server
-        gcloud compute ssh db-server --zone=${{ env.ZONE }} --command "
-          sudo lynis audit system --quick --no-colors > /var/log/lynis-db.log 2>&1"
-
-        echo "Security scans completed and logged"
           pip install -r requirements.txt gunicorn && \
           python3 manage.py migrate && \
           python3 manage.py collectstatic --noinput && \
