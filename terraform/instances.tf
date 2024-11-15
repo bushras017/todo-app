@@ -14,6 +14,11 @@ resource "google_compute_instance" "db_server" {
 
   network_interface {
     subnetwork = google_compute_subnetwork.subnet.id
+    access_config {}
+  }
+  
+  network_interface {
+    subnetwork = google_compute_subnetwork.subnet.id
   }
 
   metadata = {

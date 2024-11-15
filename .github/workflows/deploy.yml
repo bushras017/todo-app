@@ -57,6 +57,68 @@ jobs:
       working-directory: ./terraform
       run: terraform validate
 
+    - name: Clean and Import Resources
+      working-directory: ./terraform
+      run: |
+        # Remove existing state
+        terraform state rm google_compute_network.vpc || true
+        terraform state rm google_compute_subnetwork.subnet || true
+        terraform state rm google_compute_firewall.allow_monitoring || true
+        terraform state rm google_compute_firewall.allow_django || true
+        terraform state rm google_compute_firewall.allow_internal || true
+        terraform state rm google_compute_instance.db_server || true
+        terraform state rm google_compute_instance.web_server || true
+        terraform state rm google_bigquery_dataset.security_logs || true
+        terraform state rm google_pubsub_topic.prometheus_alerts || true
+        terraform state rm google_storage_bucket.function_bucket || true
+        terraform state rm google_cloudfunctions_function.alert_handler || true
+        
+        # Import resources
+        echo "Importing VPC..."
+        terraform import google_compute_network.vpc \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/networks/devsecops-vpc" || true
+        
+        echo "Importing subnet..."
+        terraform import google_compute_subnetwork.subnet \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/regions/${{ env.REGION }}/subnetworks/devsecops-subnet" || true
+        
+        echo "Importing firewall rules..."
+        terraform import google_compute_firewall.allow_monitoring \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-monitoring" || true
+        
+        terraform import google_compute_firewall.allow_django \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-django" || true
+        
+        terraform import google_compute_firewall.allow_internal \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-internal" || true
+        
+        echo "Importing compute instances..."
+        terraform import google_compute_instance.db_server \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/db-server" || true
+        
+        terraform import google_compute_instance.web_server \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/web-server" || true
+        
+        echo "Importing BigQuery dataset..."
+        terraform import google_bigquery_dataset.security_logs \
+          "${{ secrets.GCP_PROJECT_ID }}:security_logs" || true
+        
+        echo "Importing Pub/Sub topic..."
+        terraform import google_pubsub_topic.prometheus_alerts \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/topics/prometheus-alerts" || true
+        
+        echo "Importing storage bucket..."
+        terraform import google_storage_bucket.function_bucket \
+          "${{ secrets.GCP_PROJECT_ID }}-functions" || true
+        
+        echo "Importing cloud function..."
+        terraform import google_cloudfunctions_function.alert_handler \
+          "projects/${{ secrets.GCP_PROJECT_ID }}/locations/${{ env.REGION }}/functions/alert-handler" || true
+        
+        # Show the current state
+        echo "Current Terraform State:"
+        terraform state list
+
     - name: Terraform Plan
       if: github.event_name == 'pull_request'
       working-directory: ./terraform
