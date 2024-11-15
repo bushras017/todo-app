@@ -69,7 +69,27 @@ jobs:
 
     - name: Setup Database
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      working-directory: ./terraform
+      run: terraform apply -auto-approve
+
+    - name: Setup Database
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       run: |
+        # Get DB server IP
+        DB_IP=$(terraform -chdir=terraform output -raw db_server_public_ip)
+        
+        # Configure PostgreSQL
+        gcloud compute ssh db-server --zone=${{ env.ZONE }} --command "
+          # Create database and user
+          sudo -u postgres psql -c \"CREATE USER django_user WITH PASSWORD '${{ secrets.DB_PASSWORD }}';\" || true
+          sudo -u postgres psql -c \"CREATE DATABASE django_db OWNER django_user;\" || true
+          
+          # Configure PostgreSQL networking
+          sudo sh -c 'echo \"host    django_db    django_user    10.0.0.0/24    md5\" >> /etc/postgresql/12/main/pg_hba.conf'
+          sudo sed -i \"s/#listen_addresses = 'localhost'/listen_addresses = '*'/\" /etc/postgresql/12/main/postgresql.conf
+          
+          # Restart PostgreSQL
+          sudo systemctl restart postgresql"
         # Get DB server IP
         DB_IP=$(terraform -chdir=terraform output -raw db_server_public_ip)
         
@@ -100,8 +120,12 @@ jobs:
         DB_NAME=django_db
         DB_USER=django_user
         DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+        DB_NAME=django_db
+        DB_USER=django_user
+        DB_PASSWORD=${{ secrets.DB_PASSWORD }}
         DB_HOST=$DB_IP
         DB_PORT=5432
+        ALLOWED_HOSTS=$WEB_IP,localhost,127.0.0.1
         ALLOWED_HOSTS=$WEB_IP,localhost,127.0.0.1
         GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
         EOF
@@ -114,7 +138,31 @@ jobs:
         mkdir -p $DEPLOY_DIR/staticfiles
 
         # Setup on web server
+        # Setup on web server
         gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
+          # Setup directories and permissions
+          sudo mkdir -p /opt/django-app /opt/django-app/logs
+          sudo chown -R \$USER:\$USER /opt/django-app
+          
+          # Install Gunicorn
+          python3 -m pip install gunicorn
+
+          # Create systemd service file for Gunicorn
+          sudo tee /etc/systemd/system/gunicorn.service << 'EOL'
+          [Unit]
+          Description=Gunicorn daemon for Django application
+          After=network.target
+
+          [Service]
+          User=$USER
+          Group=$USER
+          WorkingDirectory=/opt/django-app
+          ExecStart=/opt/django-app/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:8000 todoApp.wsgi:application --access-logfile /opt/django-app/logs/access.log --error-logfile /opt/django-app/logs/error.log
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+          EOL"
           # Setup directories and permissions
           sudo mkdir -p /opt/django-app /opt/django-app/logs
           sudo chown -R \$USER:\$USER /opt/django-app
@@ -144,10 +192,30 @@ jobs:
         gcloud compute scp $DEPLOY_DIR/.env web-server:/opt/django-app/ --zone=${{ env.ZONE }}
 
         # Setup and start Django with Gunicorn
+        # Setup and start Django with Gunicorn
         gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
           cd /opt/django-app && \
           python3 -m venv venv && \
           source venv/bin/activate && \
+          pip install -r requirements.txt gunicorn && \
+          python3 manage.py migrate && \
+          python3 manage.py collectstatic --noinput && \
+          sudo systemctl daemon-reload && \
+          sudo systemctl enable gunicorn && \
+          sudo systemctl restart gunicorn"
+
+    - name: Run Lynis Security Scan
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        # Run Lynis on web server
+        gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
+          sudo lynis audit system --quick --no-colors > /opt/django-app/logs/lynis-web.log 2>&1"
+
+        # Run Lynis on db server
+        gcloud compute ssh db-server --zone=${{ env.ZONE }} --command "
+          sudo lynis audit system --quick --no-colors > /var/log/lynis-db.log 2>&1"
+
+        echo "Security scans completed and logged"
           pip install -r requirements.txt gunicorn && \
           python3 manage.py migrate && \
           python3 manage.py collectstatic --noinput && \
