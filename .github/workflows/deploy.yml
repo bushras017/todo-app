@@ -241,187 +241,114 @@ jobs:
               exit 1
             fi"
 
-      - name: Setup Prometheus on Web Server
+      - name: Setup Monitoring Services
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          REPO_ROOT: ${{ github.workspace }}
         run: |
           # Get Web Server IP
           WEB_IP=$(terraform -chdir=terraform output -raw web_server_public_ip)
-          echo "Using Web IP: $WEB_IP"
+          echo "Setting up monitoring with WEB_IP: $WEB_IP"
 
-          # Create temporary directory for configs
-          mkdir -p prometheus_configs
+          # Create temp directory for processed configs
+          TEMP_DIR=$(mktemp -d)
+          echo "Created temp directory: $TEMP_DIR"
 
-          # Create Prometheus config
-          cat > prometheus_configs/prometheus.yml << EOF
-          global:
-            scrape_interval: 15s
-            evaluation_interval: 15s
+          # Process Prometheus config
+          echo "Processing Prometheus config..."
+          export WEB_IP
+          envsubst '${WEB_IP}' < ${REPO_ROOT}/deployment/configs/prometheus/prometheus.yml > $TEMP_DIR/prometheus.yml
+          
+          # Copy alerts config directly (no variable substitution needed)
+          echo "Processing alerts config..."
+          cp ${REPO_ROOT}/deployment/configs/prometheus/rules/alerts.yml $TEMP_DIR/alerts.yml
 
-          rule_files:
-            - /etc/prometheus/rules/*.yml
+          # Process Alertmanager config
+          echo "Processing Alertmanager config..."
+          envsubst '${WEB_IP}' < ${REPO_ROOT}/deployment/configs/alertmanager/alertmanager.yml > $TEMP_DIR/alertmanager.yml
 
-          scrape_configs:
-            - job_name: 'django'
-              metrics_path: '/prometheus/metrics'
-              static_configs:
-                - targets: ['$WEB_IP:8000']
-                  labels:
-                    instance: 'web-server'
+          # Copy service files
+          echo "Copying service files..."
+          cp ${REPO_ROOT}/deployment/services/prometheus.service $TEMP_DIR/
+          cp ${REPO_ROOT}/deployment/services/alertmanager.service $TEMP_DIR/
+          cp ${REPO_ROOT}/deployment/services/node-exporter.service $TEMP_DIR/
 
-            - job_name: 'node'
-              static_configs:
-                - targets: ['$WEB_IP:9100']
-                  labels:
-                    instance: 'web-server'
+          # Copy setup script
+          echo "Copying setup script..."
+          cp ${REPO_ROOT}/deployment/scripts/setup-monitoring.sh $TEMP_DIR/
+          chmod +x $TEMP_DIR/setup-monitoring.sh
 
-          alerting:
-            alertmanagers:
-              - static_configs:
-                  - targets: ['$WEB_IP:9093']
-          EOF
+          # Display prepared files
+          echo "Files prepared for transfer:"
+          ls -la $TEMP_DIR
 
-          # Create alert rules
-          cat > prometheus_configs/alerts.yml << EOF
-          groups:
-          - name: django_alerts
-            rules:
-            - alert: FailedLoginAttempt
-              expr: increase(django_failed_login_total[1m]) >= 1
-              for: 10s
-              labels:
-                severity: warning
-              annotations:
-                summary: Failed Login Attempt
-                description: "Failed login attempt detected from {{ \$labels.ip }}"
+          # Transfer files to server
+          echo "Transferring files to server..."
+          gcloud compute scp --recurse $TEMP_DIR/* web-server:/tmp/ --zone=${{ env.ZONE }}
 
-            - alert: HighCPUUsage
-              expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
-              for: 5m
-              labels:
-                severity: warning
-              annotations:
-                summary: High CPU Usage
-                description: "CPU usage is above 80% on {{ \$labels.instance }}"
-          EOF
+          # Execute setup script with WEB_IP
+          echo "Executing setup script..."
+          gcloud compute ssh web-server --zone=${{ env.ZONE }} -- "cd /tmp && sudo WEB_IP=$WEB_IP bash setup-monitoring.sh $WEB_IP"
 
-          # Create Alertmanager config
-          cat > prometheus_configs/alertmanager.yml << EOF
-          global:
-            resolve_timeout: 5m
+          # Clean up
+          rm -rf $TEMP_DIR
 
-          route:
-            group_by: ['alertname']
-            group_wait: 10s
-            group_interval: 10s
-            repeat_interval: 1h
-            receiver: 'pubsub'
+          # Final verification from GitHub Actions
+          echo "Performing external verification..."
+          sleep 5
 
-          receivers:
-            - name: 'pubsub'
-              webhook_configs:
-                - url: 'http://$WEB_IP:9095/alerts'
-          EOF
+          # Test all endpoints
+          endpoints=(
+            "Prometheus:9090:-/healthy"
+            "Alertmanager:9093:-/healthy"
+            "Node Exporter:9100:metrics"
+          )
 
-          # Copy all configs to web server
-          gcloud compute scp --recurse prometheus_configs/* web-server:/tmp/ --zone=${{ env.ZONE }}
-
-          # Setup and configure on web server
-          gcloud compute ssh web-server --zone=${{ env.ZONE }} -- bash -c '
-            set -e
-
-            # Install required packages
-            sudo apt-get update
-            sudo apt-get install -y prometheus prometheus-alertmanager prometheus-node-exporter
-
-            # Create directories
-            sudo mkdir -p /etc/prometheus/rules
-            sudo mkdir -p /etc/alertmanager
-
-            # Move config files
-            sudo mv /tmp/prometheus.yml /etc/prometheus/
-            sudo mv /tmp/alerts.yml /etc/prometheus/rules/
-            sudo mv /tmp/alertmanager.yml /etc/alertmanager/
-
-            # Set permissions
-            sudo chown -R prometheus:prometheus /etc/prometheus
-            sudo chown -R prometheus:prometheus /etc/alertmanager
-            sudo chmod -R 644 /etc/prometheus/prometheus.yml /etc/prometheus/rules/alerts.yml /etc/alertmanager/alertmanager.yml
-            sudo chmod 755 /etc/prometheus/rules
-
-            # Create systemd override directories
-            sudo mkdir -p /etc/systemd/system/prometheus.service.d
-            sudo mkdir -p /etc/systemd/system/prometheus-alertmanager.service.d
-            sudo mkdir -p /etc/systemd/system/prometheus-node-exporter.service.d
-
-            # Create override files
-            echo "[Service]
-            ExecStart=
-            ExecStart=/usr/bin/prometheus \\
-              --web.listen-address=:9090 \\
-              --config.file=/etc/prometheus/prometheus.yml \\
-              --storage.tsdb.path=/var/lib/prometheus \\
-              --web.enable-lifecycle" | sudo tee /etc/systemd/system/prometheus.service.d/override.conf
-
-            echo "[Service]
-            ExecStart=
-            ExecStart=/usr/bin/alertmanager \\
-              --web.listen-address=:9093 \\
-              --config.file=/etc/alertmanager/alertmanager.yml \\
-              --storage.path=/var/lib/alertmanager" | sudo tee /etc/systemd/system/prometheus-alertmanager.service.d/override.conf
-
-            echo "[Service]
-            ExecStart=
-            ExecStart=/usr/bin/prometheus-node-exporter \\
-              --web.listen-address=:9100" | sudo tee /etc/systemd/system/prometheus-node-exporter.service.d/override.conf
-
-            # Reload systemd and restart services
-            sudo systemctl daemon-reload
-            sudo systemctl restart prometheus
-            sudo systemctl restart prometheus-alertmanager
-            sudo systemctl restart prometheus-node-exporter
-
-            # Wait for services to start
-            sleep 5
-
-            # Verify services are running
-            services="prometheus prometheus-alertmanager prometheus-node-exporter"
-            for service in $services; do
-              if ! sudo systemctl is-active --quiet $service; then
-                echo "$service is not running"
-                sudo systemctl status $service
-                exit 1
+          for endpoint in "${endpoints[@]}"; do
+            IFS=':' read -r name port path <<< "$endpoint"
+            url="http://$WEB_IP:$port/$path"
+            
+            echo "Testing $name at $url..."
+            max_retries=3
+            retry_count=0
+            
+            while [ $retry_count -lt $max_retries ]; do
+              if curl -s -f "$url" > /dev/null; then
+                echo "✅ $name is accessible"
+                break
+              else
+                retry_count=$((retry_count + 1))
+                if [ $retry_count -eq $max_retries ]; then
+                  echo "❌ $name is not accessible after $max_retries attempts"
+                  echo "Last curl attempt output:"
+                  curl -v "$url"
+                  exit 1
+                fi
+                echo "Retry $retry_count/$max_retries for $name..."
+                sleep 5
               fi
             done
-
-            # Test endpoints
-            endpoints="9090 9093 9100"
-            for port in $endpoints; do
-              if ! curl -s localhost:$port > /dev/null; then
-                echo "Port $port is not responding"
-                sudo netstat -tlpn | grep $port
-                exit 1
-              fi
-            done
-
-            echo "All services are running and responding"
-          '
-
-          # Final verification
-          echo "Testing endpoints..."
-          for port in 9090 9093 9100; do
-            if curl -s "http://$WEB_IP:$port" > /dev/null; then
-              echo "Port $port is accessible"
-            else
-              echo "Port $port is not accessible"
-            fi
           done
 
-          echo "Setup complete. Access points:"
-          echo "Prometheus: http://$WEB_IP:9090"
-          echo "Alertmanager: http://$WEB_IP:9093"
+          # Final success message
+          echo "=== Monitoring Setup Completed Successfully ==="
+          echo "Access your monitoring services at:"
+          echo "Prometheus:    http://$WEB_IP:9090"
+          echo "Alertmanager:  http://$WEB_IP:9093"
           echo "Node Exporter: http://$WEB_IP:9100/metrics"
-          echo "Django metrics: http://$WEB_IP:8000/prometheus/metrics"
-    
+          
+          echo "Checking service status on server..."
+          gcloud compute ssh web-server --zone=${{ env.ZONE }} -- '
+            echo "=== Service Status ==="
+            for service in prometheus alertmanager prometheus-node-exporter; do
+              echo "Status of $service:"
+              sudo systemctl status $service --no-pager | head -n 3
+            done
+            
+            echo "=== Listening Ports ==="
+            sudo netstat -tulpn | grep -E ":909|:9100"
+          '
+          
       - name: Run Lynis Security Scan
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
