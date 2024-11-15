@@ -1,23 +1,22 @@
-
-
-# deployment/services/alertmanager.service
 [Unit]
 Description=Alertmanager for Prometheus
 Documentation=https://prometheus.io/docs/alerting/latest/alertmanager/
+Wants=network-online.target
 After=network-online.target
 
 [Service]
+Type=simple
 User=prometheus
 Group=prometheus
-Type=simple
-ExecStart=/usr/bin/alertmanager \
+ExecStart=/usr/bin/prometheus-alertmanager \
     --config.file=/etc/alertmanager/alertmanager.yml \
     --storage.path=/var/lib/alertmanager \
-    --web.listen-address=0.0.0.0:9093
+    --web.listen-address=0.0.0.0:9093 \
+    --cluster.listen-address=
 
 Restart=always
-RestartSec=5
+RestartSec=10
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
-
