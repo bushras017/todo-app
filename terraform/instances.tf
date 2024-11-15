@@ -175,10 +175,13 @@ rule_files:
 
 scrape_configs:
   - job_name: 'django'
+    metrics_path: '/prometheus/metrics'
+    scheme: http
     static_configs:
       - targets: ['$EXTERNAL_IP:8000']
         labels:
           instance: 'web-server'
+          application: 'django'
 
   - job_name: 'node'
     static_configs:

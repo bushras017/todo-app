@@ -10,6 +10,11 @@ output "db_server_private_ip" {
   description = "The private IP address of the database server"
 }
 
+output "db_server_public_ip" {
+  value = google_compute_instance.db_server.network_interface[0].access_config[0].nat_ip
+  description = "The public IP address of the database server"
+}
+
 output "prometheus_url" {
   value = "http://${google_compute_instance.web_server.network_interface[0].access_config[0].nat_ip}:9090"
   description = "The URL for accessing Prometheus"
