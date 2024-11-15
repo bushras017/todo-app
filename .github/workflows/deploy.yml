@@ -192,50 +192,41 @@ jobs:
         # Create the static files directory if it doesn't exist
         mkdir -p $DEPLOY_DIR/staticfiles
 
-        # Get the username from the instance
         INSTANCE_USER=$(gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "whoami")
         echo "Instance user is: $INSTANCE_USER"
 
-        # Setup on web server
+        # Then create the service file with explicit user
         gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
-          # Setup directories and permissions
-          sudo mkdir -p /opt/django-app /opt/django-app/logs
-          sudo chown -R \$(whoami):\$(whoami) /opt/django-app
-          
-          # Ensure Python 3 and pip are installed
-          sudo apt-get update
-          sudo apt-get install -y python3 python3-pip python3-venv
-          
-          # Install Gunicorn globally with Python 3
-          sudo python3 -m pip install gunicorn"
+          sudo tee /etc/systemd/system/gunicorn.service << 'EOF'
+[Unit]
+Description=Gunicorn daemon for Django application
+After=network.target
 
-        # Create systemd service file with correct user
-        gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
-          sudo tee /etc/systemd/system/gunicorn.service << EOF
-          [Unit]
-          Description=Gunicorn daemon for Django application
-          After=network.target
+[Service]
+User=$INSTANCE_USER
+Group=$INSTANCE_USER
+WorkingDirectory=/opt/django-app
+ExecStart=/opt/django-app/venv/bin/python3 -m gunicorn \
+    --workers 3 \
+    --bind 0.0.0.0:8000 \
+    --access-logfile /opt/django-app/logs/access.log \
+    --error-logfile /opt/django-app/logs/error.log \
+    --capture-output \
+    --log-level debug \
+    todoApp.wsgi:application
+Environment=PYTHONPATH=/opt/django-app
+Environment=DJANGO_SETTINGS_MODULE=todoApp.settings
+Restart=always
+RestartSec=5
 
-          [Service]
-          User=${INSTANCE_USER}
-          Group=${INSTANCE_USER}
-          WorkingDirectory=/opt/django-app
-          ExecStart=/opt/django-app/venv/bin/python3 -m gunicorn \\
-            --workers 3 \\
-            --bind \$(hostname -i):8000 \\
-            --access-logfile /opt/django-app/logs/access.log \\
-            --error-logfile /opt/django-app/logs/error.log \\
-            --capture-output \\
-            --log-level debug \\
-            todoApp.wsgi:application
-          Environment="PYTHONPATH=/opt/django-app"
-          Environment="DJANGO_SETTINGS_MODULE=todoApp.settings"
-          Restart=always
-          RestartSec=5
+[Install]
+WantedBy=multi-user.target
+EOF
 
-          [Install]
-          WantedBy=multi-user.target
-          EOF"
+          # Verify the service file content
+          echo 'Created service file:'
+          cat /etc/systemd/system/gunicorn.service
+        "
 
         # Copy files to web server
         gcloud compute scp --recurse $DEPLOY_DIR/* web-server:/opt/django-app/ --zone=${{ env.ZONE }}
@@ -244,39 +235,28 @@ jobs:
         # Setup and start Django with Gunicorn
         gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
           cd /opt/django-app && \
-          # Create and setup Python 3 virtual environment
           python3 -m venv venv && \
           source venv/bin/activate && \
-          # Upgrade pip and install dependencies
           python3 -m pip install --upgrade pip && \
-          python3 -m pip install -r requirements.txt && \
-          python3 -m pip install gunicorn && \
-          # Run Django commands
+          python3 -m pip install -r requirements.txt gunicorn && \
           python3 manage.py migrate && \
           python3 manage.py collectstatic --noinput && \
-          # Setup and start Gunicorn service
           sudo systemctl daemon-reload && \
           sudo systemctl enable gunicorn && \
-          sudo systemctl restart gunicorn && \
-          # Check service status
-          sudo systemctl status gunicorn"
+          sudo systemctl restart gunicorn"
 
-        # Verify the service is running and check logs if it fails
+        # Verify the service is running
         echo "Verifying Gunicorn service status..."
         gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
           if ! sudo systemctl is-active gunicorn; then
             echo 'Gunicorn failed to start. Checking logs...'
+            echo '=== Service File Content ==='
+            cat /etc/systemd/system/gunicorn.service
             echo '=== Gunicorn Service Logs ==='
             sudo journalctl -u gunicorn --no-pager -n 50
-            echo '=== Django Application Logs ==='
-            tail -n 50 /opt/django-app/logs/error.log
-            echo '=== System Logs ==='
-            sudo dmesg | tail -n 20
+            echo '=== Gunicorn Process Status ==='
+            ps aux | grep gunicorn
             exit 1
-          else
-            echo 'Gunicorn service is running'
-            echo '=== Recent Gunicorn Logs ==='
-            tail -n 20 /opt/django-app/logs/access.log
           fi"
 
     - name: Run Lynis Security Scan
