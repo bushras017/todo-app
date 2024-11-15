@@ -182,6 +182,8 @@ jobs:
 
           # Get instance user and escape any special characters
           INSTANCE_USER=$(gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "whoami" | tr -d '\n')
+          # Get instance user and escape any special characters
+          INSTANCE_USER=$(gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "whoami" | tr -d '\n')
           echo "Instance user is: $INSTANCE_USER"
 
           # Create deployment directory
@@ -238,7 +240,7 @@ jobs:
               sudo journalctl -u gunicorn --no-pager -n 50
               exit 1
             fi"
-
+            
       - name: Run Lynis Security Scan
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
