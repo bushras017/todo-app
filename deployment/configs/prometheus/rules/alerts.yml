@@ -17,13 +17,4 @@ groups:
       severity: warning
     annotations:
       summary: High CPU Usage
-      description: "CPU usage is above 80% on {{ $labels.instance }}"
-
-  - alert: DiskSpaceLow
-    expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes * 100 > 85
-    for: 5m
-    labels:
-      severity: warning
-    annotations:
-      summary: Low Disk Space
-      description: "Disk usage is above 85% on {{ $labels.instance }}"
+      description: "CPU usage is above 80%"

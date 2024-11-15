@@ -241,113 +241,25 @@ jobs:
               exit 1
             fi"
 
-      - name: Setup Monitoring Services
+      - name: Setup Monitoring
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        env:
-          REPO_ROOT: ${{ github.workspace }}
         run: |
-          # Get Web Server IP
+          # Get Web IP
           WEB_IP=$(terraform -chdir=terraform output -raw web_server_public_ip)
-          echo "Setting up monitoring with WEB_IP: $WEB_IP"
-
-          # Create temp directory for processed configs
-          TEMP_DIR=$(mktemp -d)
-          echo "Created temp directory: $TEMP_DIR"
-
-          # Process Prometheus config
-          echo "Processing Prometheus config..."
-          export WEB_IP
-          envsubst '${WEB_IP}' < ${REPO_ROOT}/deployment/configs/prometheus/prometheus.yml > $TEMP_DIR/prometheus.yml
           
-          # Copy alerts config directly (no variable substitution needed)
-          echo "Processing alerts config..."
-          cp ${REPO_ROOT}/deployment/configs/prometheus/rules/alerts.yml $TEMP_DIR/alerts.yml
-
-          # Process Alertmanager config
-          echo "Processing Alertmanager config..."
-          envsubst '${WEB_IP}' < ${REPO_ROOT}/deployment/configs/alertmanager/alertmanager.yml > $TEMP_DIR/alertmanager.yml
-
-          # Copy service files
-          echo "Copying service files..."
-          cp ${REPO_ROOT}/deployment/services/prometheus.service $TEMP_DIR/
-          cp ${REPO_ROOT}/deployment/services/alertmanager.service $TEMP_DIR/
-          cp ${REPO_ROOT}/deployment/services/node-exporter.service $TEMP_DIR/
-
-          # Copy setup script
-          echo "Copying setup script..."
-          cp ${REPO_ROOT}/deployment/scripts/setup-monitoring.sh $TEMP_DIR/
-          chmod +x $TEMP_DIR/setup-monitoring.sh
-
-          # Display prepared files
-          echo "Files prepared for transfer:"
-          ls -la $TEMP_DIR
-
-          # Transfer files to server
-          echo "Transferring files to server..."
-          gcloud compute scp --recurse $TEMP_DIR/* web-server:/tmp/ --zone=${{ env.ZONE }}
-
-          # Execute setup script with WEB_IP
-          echo "Executing setup script..."
-          gcloud compute ssh web-server --zone=${{ env.ZONE }} -- "cd /tmp && sudo WEB_IP=$WEB_IP bash setup-monitoring.sh $WEB_IP"
-
-          # Clean up
-          rm -rf $TEMP_DIR
-
-          # Final verification from GitHub Actions
-          echo "Performing external verification..."
-          sleep 5
-
-          # Test all endpoints
-          endpoints=(
-            "Prometheus:9090:-/healthy"
-            "Alertmanager:9093:-/healthy"
-            "Node Exporter:9100:metrics"
-          )
-
-          for endpoint in "${endpoints[@]}"; do
-            IFS=':' read -r name port path <<< "$endpoint"
-            url="http://$WEB_IP:$port/$path"
-            
-            echo "Testing $name at $url..."
-            max_retries=3
-            retry_count=0
-            
-            while [ $retry_count -lt $max_retries ]; do
-              if curl -s -f "$url" > /dev/null; then
-                echo "✅ $name is accessible"
-                break
-              else
-                retry_count=$((retry_count + 1))
-                if [ $retry_count -eq $max_retries ]; then
-                  echo "❌ $name is not accessible after $max_retries attempts"
-                  echo "Last curl attempt output:"
-                  curl -v "$url"
-                  exit 1
-                fi
-                echo "Retry $retry_count/$max_retries for $name..."
-                sleep 5
-              fi
-            done
-          done
-
-          # Final success message
-          echo "=== Monitoring Setup Completed Successfully ==="
-          echo "Access your monitoring services at:"
-          echo "Prometheus:    http://$WEB_IP:9090"
-          echo "Alertmanager:  http://$WEB_IP:9093"
-          echo "Node Exporter: http://$WEB_IP:9100/metrics"
+          # Process config files
+          mkdir -p temp_configs
+          envsubst '${WEB_IP}' < deployment/configs/prometheus/prometheus.yml > temp_configs/prometheus.yml
+          cp deployment/configs/prometheus/rules/alerts.yml temp_configs/alerts.yml
           
-          echo "Checking service status on server..."
-          gcloud compute ssh web-server --zone=${{ env.ZONE }} -- '
-            echo "=== Service Status ==="
-            for service in prometheus alertmanager prometheus-node-exporter; do
-              echo "Status of $service:"
-              sudo systemctl status $service --no-pager | head -n 3
-            done
-            
-            echo "=== Listening Ports ==="
-            sudo netstat -tulpn | grep -E ":909|:9100"
-          '
+          # Copy to server
+          gcloud compute scp temp_configs/* web-server:/tmp/ --zone=${{ env.ZONE }}
+          gcloud compute scp deployment/scripts/setup-monitoring.sh web-server:/tmp/ --zone=${{ env.ZONE }}
+          
+          # Run setup
+          gcloud compute ssh web-server --zone=${{ env.ZONE }} -- "bash /tmp/setup-monitoring.sh"
+          
+          echo "Monitoring available at: http://$WEB_IP:9090"
           
       - name: Run Lynis Security Scan
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'

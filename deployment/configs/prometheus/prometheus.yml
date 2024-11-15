@@ -18,8 +18,3 @@ scrape_configs:
       - targets: ['${WEB_IP}:9100']
         labels:
           instance: 'web-server'
-
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets: ['${WEB_IP}:9093']
