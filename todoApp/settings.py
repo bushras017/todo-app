@@ -111,7 +111,7 @@ LOGGING = {
     },
     'loggers': {
         'django': {
-            'handlers': ['console'],  # Cloud Logging automatically captures stdout/stderr
+            'handlers': ['console'],  
             'level': 'INFO',
         },
         'django.security': {

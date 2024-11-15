@@ -240,7 +240,155 @@ jobs:
               sudo journalctl -u gunicorn --no-pager -n 50
               exit 1
             fi"
+
+      - name: Setup Prometheus on Web Server
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          # Create config files
+          cat > prometheus.yml << EOF
+          global:
+            scrape_interval: 15s
+            evaluation_interval: 15s
+
+          rule_files:
+            - "rules/*.yml"
+
+          scrape_configs:
+            - job_name: 'django'
+              metrics_path: '/prometheus/metrics'
+              static_configs:
+                - targets: ['$WEB_IP:8000']
+                  labels:
+                    instance: 'web-server'
+
+            - job_name: 'node'
+              static_configs:
+                - targets: ['$WEB_IP:9100']
+                  labels:
+                    instance: 'web-server'
+
+          alerting:
+            alertmanagers:
+              - static_configs:
+                  - targets: ['$WEB_IP:9093']
+          EOF
+
+          cat > alerts.yml << EOF
+          groups:
+          - name: django_alerts
+            rules:
+            - alert: HighCPUUsage
+              expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+              for: 5m
+              labels:
+                severity: warning
+              annotations:
+                summary: High CPU Usage
+                description: "CPU usage is above 80% on {{ \$labels.instance }}"
+
+            - alert: DjangoHighErrorRate
+              expr: rate(django_http_errors_total[5m]) > 0.1
+              for: 1m
+              labels:
+                severity: warning
+              annotations:
+                summary: High Error Rate
+                description: "High rate of HTTP errors detected"
+
+            - alert: TestAlert
+              expr: vector(1)
+              labels:
+                severity: warning
+              annotations:
+                summary: Test Alert
+                description: "This is a test alert"
+          EOF
+
+          cat > alertmanager.yml << EOF
+          global:
+            resolve_timeout: 5m
+
+          route:
+            group_by: ['alertname']
+            group_wait: 10s
+            group_interval: 10s
+            repeat_interval: 1h
+            receiver: 'pubsub'
+
+          receivers:
+            - name: 'pubsub'
+              webhook_configs:
+                - url: 'http://$WEB_IP:9095/alerts'
+          EOF
+
+          # Copy configs to web server
+          gcloud compute scp prometheus.yml web-server:/tmp/ --zone=${{ env.ZONE }}
+          gcloud compute scp alerts.yml web-server:/tmp/ --zone=${{ env.ZONE }}
+          gcloud compute scp alertmanager.yml web-server:/tmp/ --zone=${{ env.ZONE }}
+
+          # Setup Prometheus on web server
+          gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
+            # Install Prometheus
+            sudo apt-get update
+            sudo apt-get install -y prometheus prometheus-alertmanager prometheus-node-exporter
+
+            # Copy configs
+            sudo mv /tmp/prometheus.yml /etc/prometheus/
+            sudo mkdir -p /etc/prometheus/rules
+            sudo mv /tmp/alerts.yml /etc/prometheus/rules/
+            sudo mv /tmp/alertmanager.yml /etc/alertmanager/
+
+            # Set permissions
+            sudo chown -R prometheus:prometheus /etc/prometheus
+            sudo chown -R prometheus:prometheus /etc/alertmanager
+
+            # Restart services
+            sudo systemctl restart prometheus
+            sudo systemctl restart prometheus-alertmanager
+            sudo systemctl restart prometheus-node-exporter
+
+            # Verify services
+            if ! curl -s $WEB_IP:9090/-/healthy > /dev/null; then
+              echo 'Prometheus not healthy'
+              sudo systemctl status prometheus
+              exit 1
+            fi
+
+            if ! curl -s $WEB_IP:9093/-/healthy > /dev/null; then
+              echo 'Alertmanager not healthy'
+              sudo systemctl status prometheus-alertmanager
+              exit 1
+            fi
+
+            # Wait for test alert
+            echo 'Waiting for test alert...'
+            sleep 30
             
+            # Check alert status
+            ALERT_STATUS=\$(curl -s http://$WEB_IP:9090/api/v1/alerts | grep TestAlert)
+            if [ -z \"\$ALERT_STATUS\" ]; then
+              echo 'Test alert not found'
+              exit 1
+            fi
+
+            # Test webhook to Cloud Function
+            PUBSUB_TOPIC=projects/${{ secrets.GCP_PROJECT_ID }}/topics/prometheus-alerts
+            gcloud pubsub topics publish \$PUBSUB_TOPIC --message='{
+              \"labels\": {
+                \"alertname\": \"TestAlert\",
+                \"severity\": \"warning\"
+              },
+              \"annotations\": {
+                \"description\": \"Manual test alert\"
+              }
+            }'
+
+            # Check Cloud Function logs
+            echo 'Checking Cloud Function logs...'
+            sleep 10
+            gcloud functions logs read alert-handler --limit 5
+          "
+
       - name: Run Lynis Security Scan
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
