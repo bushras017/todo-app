@@ -124,6 +124,18 @@ jobs:
       working-directory: ./terraform
       run: terraform plan
 
+    - name: Prepare Cloud Function
+      run: |
+        if [ -d "cloud_function" ]; then
+          cd cloud_function
+          zip -r ../terraform/function.zip ./*
+        else
+          echo "Cloud function directory not found. Creating empty function.zip"
+          touch empty.txt
+          zip terraform/function.zip empty.txt
+          rm empty.txt
+        fi
+        
     - name: Terraform Apply
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       working-directory: ./terraform
