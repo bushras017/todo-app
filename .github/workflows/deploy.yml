@@ -33,20 +33,6 @@ jobs:
         SA_EMAIL=$(echo '${{ secrets.GCP_SA_KEY }}' | jq -r '.client_email')
         echo "SA_EMAIL=$SA_EMAIL" >> $GITHUB_ENV
 
-    - name: Setup Additional IAM Permissions
-      run: |
-        gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
-          --member="serviceAccount:${{ env.SA_EMAIL }}" \
-          --role="roles/storage.admin"
-
-        gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
-          --member="serviceAccount:${{ env.SA_EMAIL }}" \
-          --role="roles/bigquery.dataEditor"
-        
-        gcloud projects add-iam-policy-binding ${{ secrets.GCP_PROJECT_ID }} \
-          --member="serviceAccount:${{ env.SA_EMAIL }}" \
-          --role="roles/logging.configWriter"
-
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
 
@@ -67,98 +53,42 @@ jobs:
       working-directory: ./terraform
       run: terraform init
 
-    - name: Clean and Import Resources
+    - name: Terraform Format Check
       working-directory: ./terraform
-      run: |
-        # Remove existing state
-        terraform state rm google_compute_network.vpc || true
-        terraform state rm google_compute_subnetwork.subnet || true
-        terraform state rm google_compute_firewall.allow_monitoring || true
-        terraform state rm google_compute_firewall.allow_django || true
-        terraform state rm google_compute_firewall.allow_internal || true
-        terraform state rm google_compute_firewall.blocked_ips || true
-        terraform state rm google_compute_instance.db_server || true
-        terraform state rm google_compute_instance.web_server || true
-        terraform state rm google_bigquery_dataset.security_logs || true
-        terraform state rm google_pubsub_topic.prometheus_alerts || true
-        terraform state rm google_storage_bucket.function_bucket || true
-        terraform state rm google_cloudfunctions_function.alert_handler || true
-        
-        # Import resources
-        echo "Importing VPC..."
-        terraform import google_compute_network.vpc \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/networks/devsecops-vpc" || true
-        
-        echo "Importing subnet..."
-        terraform import google_compute_subnetwork.subnet \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/regions/${{ env.REGION }}/subnetworks/devsecops-subnet" || true
-        
-        echo "Importing firewall rules..."
-        terraform import google_compute_firewall.allow_monitoring \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-monitoring" || true
-        
-        terraform import google_compute_firewall.allow_django \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-django" || true
-        
-        terraform import google_compute_firewall.allow_internal \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/allow-internal" || true
-        
-        terraform import google_compute_firewall.blocked_ips \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/global/firewalls/blocked-ips" || true
-        
-        echo "Importing compute instances..."
-        terraform import google_compute_instance.db_server \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/db-server" || true
-        
-        terraform import google_compute_instance.web_server \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/zones/${{ env.ZONE }}/instances/web-server" || true
-        
-        echo "Importing BigQuery dataset..."
-        terraform import google_bigquery_dataset.security_logs \
-          "${{ secrets.GCP_PROJECT_ID }}:security_logs" || true
-        
-        echo "Importing Pub/Sub topic..."
-        terraform import google_pubsub_topic.prometheus_alerts \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/topics/prometheus-alerts" || true
-        
-        echo "Importing storage bucket..."
-        terraform import google_storage_bucket.function_bucket \
-          "${{ secrets.GCP_PROJECT_ID }}-functions" || true
-        
-        echo "Importing cloud function..."
-        terraform import google_cloudfunctions_function.alert_handler \
-          "projects/${{ secrets.GCP_PROJECT_ID }}/locations/${{ env.REGION }}/functions/alert-handler" || true
-        
-        # Show the current state
-        echo "Current Terraform State:"
-        terraform state list
+      run: terraform fmt -check
+
+    - name: Terraform Validate
+      working-directory: ./terraform
+      run: terraform validate
 
     - name: Terraform Plan
       if: github.event_name == 'pull_request'
       working-directory: ./terraform
       run: terraform plan
 
-    - name: Prepare Cloud Function
-      run: |
-        if [ -d "cloud_function" ]; then
-          cd cloud_function
-          zip -r ../terraform/function.zip ./*
-        else
-          echo "Cloud function directory not found. Creating empty function.zip"
-          touch empty.txt
-          zip terraform/function.zip empty.txt
-          rm empty.txt
-        fi
-
     - name: Terraform Apply
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      working-directory: ./terraform
+      run: terraform apply -auto-approve
+
+    - name: Setup Database
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       run: |
-        cd terraform
-        # First refresh the state
-        terraform apply -refresh-only -auto-approve || true
+        # Get DB server IP
+        DB_IP=$(terraform -chdir=terraform output -raw db_server_public_ip)
         
-        # Then apply changes
-        terraform apply -auto-approve
+        # Configure PostgreSQL
+        gcloud compute ssh db-server --zone=${{ env.ZONE }} --command "
+          # Create database and user
+          sudo -u postgres psql -c \"CREATE USER django_user WITH PASSWORD '${{ secrets.DB_PASSWORD }}';\" || true
+          sudo -u postgres psql -c \"CREATE DATABASE django_db OWNER django_user;\" || true
+          
+          # Configure PostgreSQL networking
+          sudo sh -c 'echo \"host    django_db    django_user    10.0.0.0/24    md5\" >> /etc/postgresql/12/main/pg_hba.conf'
+          sudo sed -i \"s/#listen_addresses = 'localhost'/listen_addresses = '*'/\" /etc/postgresql/12/main/postgresql.conf
+          
+          # Restart PostgreSQL
+          sudo systemctl restart postgresql"
 
     - name: Deploy Django App
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -171,72 +101,73 @@ jobs:
         cat > .env << EOF
         DEBUG=False
         DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+        DB_NAME=django_db
+        DB_USER=django_user
+        DB_PASSWORD=${{ secrets.DB_PASSWORD }}
         DB_HOST=$DB_IP
         DB_PORT=5432
-        DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+        ALLOWED_HOSTS=$WEB_IP,localhost,127.0.0.1
         GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
         EOF
 
         # Create deployment directory
-        echo "Setting up deployment directory..."
         DEPLOY_DIR="deploy_package"
         mkdir -p $DEPLOY_DIR
-        
-        # Copy all necessary files while maintaining directory structure
         cp -r manage.py requirements.txt todoApp todos staticfiles $DEPLOY_DIR/
         cp .env $DEPLOY_DIR/
-        
-        # Create the static files directory if it doesn't exist
         mkdir -p $DEPLOY_DIR/staticfiles
 
-        # Set up the application directory with correct permissions
-        echo "Setting up application directory..."
+        # Setup on web server
         gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
-          sudo mkdir -p /opt/django-app && \
-          sudo chown -R \$USER:\$USER /opt/django-app && \
-          sudo chmod -R 755 /opt/django-app"
+          # Setup directories and permissions
+          sudo mkdir -p /opt/django-app /opt/django-app/logs
+          sudo chown -R \$USER:\$USER /opt/django-app
+          
+          # Install Gunicorn
+          python3 -m pip install gunicorn
 
-        # Remove existing files
-        echo "Cleaning existing files..."
-        gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "rm -rf /opt/django-app/*"
+          # Create systemd service file for Gunicorn
+          sudo tee /etc/systemd/system/gunicorn.service << 'EOL'
+          [Unit]
+          Description=Gunicorn daemon for Django application
+          After=network.target
+
+          [Service]
+          User=$USER
+          Group=$USER
+          WorkingDirectory=/opt/django-app
+          ExecStart=/opt/django-app/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:8000 todoApp.wsgi:application --access-logfile /opt/django-app/logs/access.log --error-logfile /opt/django-app/logs/error.log
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+          EOL"
 
         # Copy files to web server
-        echo "Copying files to web server..."
         gcloud compute scp --recurse $DEPLOY_DIR/* web-server:/opt/django-app/ --zone=${{ env.ZONE }}
         gcloud compute scp $DEPLOY_DIR/.env web-server:/opt/django-app/ --zone=${{ env.ZONE }}
 
-        # Setup and start Django
-        echo "Setting up Django environment..."
+        # Setup and start Django with Gunicorn
         gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
           cd /opt/django-app && \
-          # Create and activate virtual environment
           python3 -m venv venv && \
           source venv/bin/activate && \
-          
-          # Install dependencies
-          pip install -r requirements.txt && \
-          
-          # Run Django commands
-          python manage.py migrate && \
-          python manage.py collectstatic --noinput && \
-          
-          # Ensure proper ownership of all files
-          sudo chown -R \$USER:\$USER . && \
-          
-          # Stop existing Django process
-          pkill -f 'python manage.py runserver' || true && \
-          
-          # Start Django with proper logging
-          mkdir -p logs && \
-          nohup python manage.py runserver 0.0.0.0:8000 > logs/django.log 2>&1 & \
-          
-          # Verify the server started
-          sleep 5 && \
-          if pgrep -f 'python manage.py runserver' > /dev/null; then
-            echo 'Django server started successfully'
-            exit 0
-          else
-            echo 'Failed to start Django server' >&2
-            cat logs/django.log
-            exit 1
-          fi"
+          pip install -r requirements.txt gunicorn && \
+          python3 manage.py migrate && \
+          python3 manage.py collectstatic --noinput && \
+          sudo systemctl daemon-reload && \
+          sudo systemctl enable gunicorn && \
+          sudo systemctl restart gunicorn"
+
+    - name: Run Lynis Security Scan
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        # Run Lynis on web server
+        gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
+          sudo lynis audit system --quick --no-colors > /opt/django-app/logs/lynis-web.log 2>&1"
+
+        # Run Lynis on db server
+        gcloud compute ssh db-server --zone=${{ env.ZONE }} --command "
+          sudo lynis audit system --quick --no-colors > /var/log/lynis-db.log 2>&1"
+
+        echo "Security scans completed and logged"
