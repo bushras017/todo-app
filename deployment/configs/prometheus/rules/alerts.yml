@@ -5,7 +5,7 @@ groups:
     expr: increase(django_failed_login_total[1m]) >= 1
     for: 10s
     labels:
-      severity: warning
+      severity: critical
     annotations:
       summary: Failed Login Attempt
       description: "Failed login attempt detected"
@@ -14,7 +14,7 @@ groups:
     expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 1
     for: 5m
     labels:
-      severity: warning
+      severity: critical
     annotations:
       summary: High CPU Usage
       description: "CPU usage is above 80%"
@@ -23,7 +23,7 @@ groups:
     expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes * 100 > 85
     for: 5m
     labels:
-      severity: warning
+      severity: critical
     annotations:
       summary: Low Disk Space
       description: "Disk usage is above 85% on {{ $labels.instance }}"

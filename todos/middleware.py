@@ -3,7 +3,7 @@ import json
 import logging
 from django.http import HttpResponseForbidden
 import time
-from .alerts import AlertManager, SecurityAlert, admin_access_total, failed_login_rate, \
+from todos.alerts import AlertManager, SecurityAlert, admin_access_total, failed_login_rate, \
 failed_login_total, http_errors_total, request_latency
 
 logger = logging.getLogger('django.security')
@@ -58,7 +58,7 @@ class SecurityMonitoringMiddleware:
         # Create and publish alert
         alert = SecurityAlert(
             alert_name="AdminAccess",
-            severity="info" if request.user.is_authenticated else "warning",
+            severity="info" if request.user.is_authenticated else "critical",
             instance=request.get_host(),
             description=f"Admin access on path: {request.path}",
             source_ip=self.get_client_ip(request),
@@ -77,26 +77,24 @@ class SecurityMonitoringMiddleware:
                 self._handle_failed_login(request)
 
     def _handle_failed_login(self, request):
-        """Handle failed login attempts"""
+        """Handle failed login attempts - triggers error on first failure"""
         ip = self.get_client_ip(request)
         username = request.POST.get('username', 'unknown')
         
-        # Update tracking window and metrics
-        self._track_failed_login(ip)
-        
-        # Create and publish alert
+        # Create and publish alert immediately on first failure
         alert = SecurityAlert(
             alert_name="FailedLoginAttempt",
-            severity="warning",
+            severity="critical",  
             instance=request.get_host(),
             description=f"Failed login attempt for user: {username}",
             source_ip=ip,
             user=username,
             metrics={
-                'failed_login_rate': len(self.failed_login_window.get(ip, [])) / 5  # per minute
+                'failed_login_rate': 1.0  # Indicate single failure
             }
         )
         alert_manager.publish_alert(alert)
+        
 
     def _track_failed_login(self, ip):
         """Track failed login attempts and update metrics"""
@@ -129,7 +127,7 @@ class SecurityMonitoringMiddleware:
         
         alert = SecurityAlert(
             alert_name="HTTPError",
-            severity="error" if response.status_code >= 500 else "warning",
+            severity="error" if response.status_code >= 500 else "critical",
             instance=request.get_host(),
             description=f"HTTP {response.status_code} error on {request.path}",
             source_ip=self.get_client_ip(request),
