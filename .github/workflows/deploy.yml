@@ -150,16 +150,21 @@ jobs:
             rm empty.txt
           fi
 
-      - name: Terraform Apply
+      - name: Terraform Apply with Rollback
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           cd terraform
-          # First refresh the state
-          terraform apply -refresh-only -auto-approve || true
+          # Create a backup of the current state
+          cp terraform.tfstate terraform.tfstate.backup || true
           
-          # Then apply changes
-          terraform apply -auto-approve
-
+          # Try to apply changes
+          if ! terraform apply -auto-approve; then
+            echo "Terraform apply failed, rolling back..."
+            cp terraform.tfstate.backup terraform.tfstate
+            terraform apply -refresh-only -auto-approve
+            exit 1
+          fi
+          
       - name: Deploy Django App
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
@@ -178,6 +183,9 @@ jobs:
           DB_PORT=5432
           ALLOWED_HOSTS=$WEB_IP,localhost,127.0.0.1
           GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
+          NOTIFICATION_EMAIL=${{ secrets.NOTIFICATION_EMAIL }}
+          EMAIL_APP_PASSWORD=${{ secrets.EMAIL_APP_PASSWORD }}
+          ALERT_EMAIL_RECIPIENTS=${{ secrets.ALERT_EMAILS }}
           EOF
 
           # Get instance user and escape any special characters
@@ -260,7 +268,7 @@ jobs:
           gcloud compute ssh web-server --zone=${{ env.ZONE }} -- "bash /tmp/setup-monitoring.sh"
           
           echo "Monitoring available at: http://$WEB_IP:9090"
-          
+
       - name: Run Lynis Security Scan
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |

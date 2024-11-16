@@ -1,102 +1,149 @@
+# todos/middleware.py
 import json
 import logging
 from django.http import HttpResponseForbidden
-from prometheus_client import Counter, Histogram
-from django.conf import settings
 import time
+from .alerts import AlertManager, SecurityAlert, admin_access_total, failed_login_rate, \
+failed_login_total, http_errors_total, request_latency
 
 logger = logging.getLogger('django.security')
-
-# Prometheus metrics
-admin_access_total = Counter(
-    'django_admin_access_total',
-    'Total number of admin page accesses',
-    ['path', 'method', 'user_type']
-)
-
-failed_login_total = Counter(
-    'django_failed_login_total',
-    'Total number of failed login attempts',
-    ['ip']
-)
-
-http_errors_total = Counter(
-    'django_http_errors_total',
-    'Total number of HTTP 4xx and 5xx errors',
-    ['status_code', 'path']
-)
-
-# Add response time metrics
-request_latency = Histogram(
-    'django_request_latency_seconds',
-    'Request latency in seconds',
-    ['path', 'method']
-)
+alert_manager = AlertManager()
 
 class SecurityMonitoringMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
+        self.failed_login_window = {}  # Track failed logins within time window
 
     def __call__(self, request):
         start_time = time.time()
+        response = None
 
-        if request.path.startswith('/admin/'):
-            user_type = 'authenticated' if request.user.is_authenticated else 'anonymous'
-            admin_access_total.labels(
-                path=request.path,
-                method=request.method,
-                user_type=user_type
-            ).inc()
+        try:
+            # Handle admin access monitoring
+            if request.path.startswith('/admin/'):
+                self._monitor_admin_access(request)
 
-            logger.info(json.dumps({
-                'event_type': 'security_event',
-                'action': 'admin_access',
-                'path': request.path,
-                'method': request.method,
-                'ip': self.get_client_ip(request),
-                'user': str(request.user) if request.user.is_authenticated else 'anonymous'
-            }))
-
-            if request.path == '/admin/login/' and request.method == 'POST':
-                if not request.user.is_authenticated:
-                    failed_login_total.labels(
-                        ip=self.get_client_ip(request)
-                    ).inc()
-                    
-                    logger.warning(json.dumps({
-                        'event_type': 'security_event',
-                        'action': 'failed_login',
-                        'ip': self.get_client_ip(request),
-                        'path': request.path,
-                        'username': request.POST.get('username', 'unknown')
-                    }))
-
-        response = self.get_response(request)
-        
-        # Record request duration
-        request_latency.labels(
-            path=request.path,
-            method=request.method
-        ).observe(time.time() - start_time)
-        
-        if 400 <= response.status_code < 600:
-            http_errors_total.labels(
-                status_code=str(response.status_code),
-                path=request.path
-            ).inc()
+            # Get response
+            response = self.get_response(request)
             
-            logger.warning(json.dumps({
-                'event_type': 'security_event',
-                'action': 'http_error',
-                'status_code': response.status_code,
-                'path': request.path,
-                'method': request.method,
-                'ip': self.get_client_ip(request)
-            }))
+            # Record request duration
+            request_latency.labels(
+                path=request.path,
+                method=request.method
+            ).observe(time.time() - start_time)
+            
+            # Monitor error responses
+            if response and 400 <= response.status_code < 600:
+                self._monitor_error_response(request, response)
 
-        return response
+            return response
+
+        except Exception as e:
+            logger.error(f"Middleware error: {str(e)}", exc_info=True)
+            if response:
+                return response
+            return self.get_response(request)
+
+    def _monitor_admin_access(self, request):
+        """Monitor and track admin interface access"""
+        user_type = 'authenticated' if request.user.is_authenticated else 'anonymous'
+        
+        # Update Prometheus metrics
+        admin_access_total.labels(
+            path=request.path,
+            method=request.method,
+            user_type=user_type
+        ).inc()
+
+        # Create and publish alert
+        alert = SecurityAlert(
+            alert_name="AdminAccess",
+            severity="info" if request.user.is_authenticated else "warning",
+            instance=request.get_host(),
+            description=f"Admin access on path: {request.path}",
+            source_ip=self.get_client_ip(request),
+            user=str(request.user) if request.user.is_authenticated else 'anonymous',
+            metrics={
+                'method': request.method,
+                'path': request.path,
+                'user_type': user_type
+            }
+        )
+        alert_manager.publish_alert(alert)
+
+        # Handle failed login attempts
+        if request.path == '/admin/login/' and request.method == 'POST':
+            if not request.user.is_authenticated:
+                self._handle_failed_login(request)
+
+    def _handle_failed_login(self, request):
+        """Handle failed login attempts"""
+        ip = self.get_client_ip(request)
+        username = request.POST.get('username', 'unknown')
+        
+        # Update tracking window and metrics
+        self._track_failed_login(ip)
+        
+        # Create and publish alert
+        alert = SecurityAlert(
+            alert_name="FailedLoginAttempt",
+            severity="warning",
+            instance=request.get_host(),
+            description=f"Failed login attempt for user: {username}",
+            source_ip=ip,
+            user=username,
+            metrics={
+                'failed_login_rate': len(self.failed_login_window.get(ip, [])) / 5  # per minute
+            }
+        )
+        alert_manager.publish_alert(alert)
+
+    def _track_failed_login(self, ip):
+        """Track failed login attempts and update metrics"""
+        current_time = time.time()
+        window_size = 300  # 5 minutes
+        
+        if ip not in self.failed_login_window:
+            self.failed_login_window[ip] = []
+        
+        # Clean old entries
+        self.failed_login_window[ip] = [
+            t for t in self.failed_login_window[ip] 
+            if current_time - t < window_size
+        ]
+        
+        # Add current attempt
+        self.failed_login_window[ip].append(current_time)
+        
+        # Update metrics
+        rate = len(self.failed_login_window[ip]) / (window_size / 60)  # per minute
+        failed_login_rate.labels(ip=ip).set(rate)
+        failed_login_total.labels(ip=ip).inc()
+
+    def _monitor_error_response(self, request, response):
+        """Monitor and track error responses"""
+        http_errors_total.labels(
+            status_code=str(response.status_code),
+            path=request.path
+        ).inc()
+        
+        alert = SecurityAlert(
+            alert_name="HTTPError",
+            severity="error" if response.status_code >= 500 else "warning",
+            instance=request.get_host(),
+            description=f"HTTP {response.status_code} error on {request.path}",
+            source_ip=self.get_client_ip(request),
+            user=str(request.user) if request.user.is_authenticated else 'anonymous',
+            metrics={
+                'status_code': response.status_code,
+                'method': request.method,
+                'path': request.path
+            }
+        )
+        alert_manager.publish_alert(alert)
 
     def get_client_ip(self, request):
+        """Get client IP address from request"""
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
         if x_forwarded_for:
             return x_forwarded_for.split(',')[0]
