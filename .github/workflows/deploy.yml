@@ -269,11 +269,91 @@ jobs:
           
           echo "Monitoring available at: http://$WEB_IP:9090"
 
-      - name: Run Lynis Security Scan
+      - name: Run Security Scans and Send Report
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
-          # Run Lynis on web server
+          # Create local reports directory
+          mkdir -p security_reports
+          
+          # SSH into web server to install safety and generate dependency report
           gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
-            sudo lynis audit system --quick --no-colors > /opt/django-app/logs/lynis-web.log 2>&1"
+            # Activate virtual environment where Django is installed
+            cd /opt/django-app
+            source venv/bin/activate
+            
+            # Install safety tool
+            pip install safety
+            
+            # Generate dependency reports
+            echo 'Generating dependency security report...'
+            safety check --json > /tmp/dependency_check.json
+            safety check --output text > /tmp/dependency_check.txt
+            
+            # Run Lynis security scan
+            echo 'Running Lynis security scan...'
+            sudo lynis audit system --quick --no-colors > /tmp/lynis-web.txt 2>&1"
 
-          echo "Security scans completed and logged"
+          # Copy reports from server
+          echo "Copying security reports from server..."
+          gcloud compute scp web-server:/tmp/dependency_check.json security_reports/ --zone=${{ env.ZONE }}
+          gcloud compute scp web-server:/tmp/dependency_check.txt security_reports/ --zone=${{ env.ZONE }}
+          gcloud compute scp web-server:/tmp/lynis-web.txt security_reports/ --zone=${{ env.ZONE }}
+          
+          # Create consolidated HTML report
+          cat > security_reports/email_report.html << EOF
+          <!DOCTYPE html>
+          <html>
+          <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 20px auto; padding: 20px;">
+          <h1>Security Scan Reports - $(date '+%Y-%m-%d %H:%M:%S')</h1>
+          
+          <h2>OWASP Dependency Check Report</h2>
+          <pre style="background-color: #f5f5f5; padding: 15px; border-radius: 5px;">
+          $(cat security_reports/dependency_check.txt)
+          </pre>
+          
+          <h2>Lynis Security Scan Report</h2>
+          <pre style="background-color: #f5f5f5; padding: 15px; border-radius: 5px;">
+          $(cat security_reports/lynis-web.txt)
+          </pre>
+          </body>
+          </html>
+          EOF
+          
+          # Send email using Python
+          python3 - << EOF
+          import smtplib
+          from email.mime.text import MIMEText
+          from email.mime.multipart import MIMEMultipart
+          from datetime import datetime
+          
+          # Email configuration
+          sender_email = "${{ secrets.NOTIFICATION_EMAIL }}"
+          password = "${{ secrets.EMAIL_APP_PASSWORD }}"
+          recipient_emails = "${{ secrets.ALERT_EMAILS }}".strip('[]').split(',')
+          
+          # Create message
+          msg = MIMEMultipart()
+          msg['From'] = sender_email
+          msg['To'] = ", ".join(recipient_emails)
+          msg['Subject'] = f"Security Scan Reports - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+          
+          # Read and attach HTML report
+          with open('security_reports/email_report.html', 'r') as f:
+              html_content = f.read()
+          
+          msg.attach(MIMEText(html_content, 'html'))
+          
+          # Send email
+          with smtplib.SMTP('smtp.gmail.com', 587) as server:
+              server.starttls()
+              server.login(sender_email, password)
+              server.send_message(msg)
+          
+          print("Security reports sent successfully!")
+          EOF
+
+          # Clean up sensitive files
+          echo "Cleaning up sensitive files..."
+          gcloud compute ssh web-server --zone=${{ env.ZONE }} --command "
+            rm -f /tmp/dependency_check.json /tmp/dependency_check.txt /tmp/lynis-web.txt"
+          rm -rf security_reports/

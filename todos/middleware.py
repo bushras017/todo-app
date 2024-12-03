@@ -90,7 +90,7 @@ class SecurityMonitoringMiddleware:
             source_ip=ip,
             user=username,
             metrics={
-                'failed_login_rate': 1.0  # Indicate single failure
+                'failed_login_rate': 3.0  # Indicate single failure
             }
         )
         alert_manager.publish_alert(alert)
@@ -127,7 +127,7 @@ class SecurityMonitoringMiddleware:
         
         alert = SecurityAlert(
             alert_name="HTTPError",
-            severity="error" if response.status_code >= 500 else "critical",
+            severity="error" if response.status_code >= 500 else "warning",
             instance=request.get_host(),
             description=f"HTTP {response.status_code} error on {request.path}",
             source_ip=self.get_client_ip(request),

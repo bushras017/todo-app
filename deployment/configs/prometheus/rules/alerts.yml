@@ -11,7 +11,7 @@ groups:
       description: "Failed login attempt detected"
 
   - alert: HighCPUUsage
-    expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 1
+    expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 2
     for: 5m
     labels:
       severity: critical
