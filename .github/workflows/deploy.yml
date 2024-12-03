@@ -257,7 +257,7 @@ jobs:
           
           # Process config files
           mkdir -p temp_configs
-          envsubst '${WEB_IP}' < deployment/configs/prometheus/prometheus.yml > temp_configs/prometheus.yml
+          envsubst < deployment/configs/prometheus/prometheus.yml > temp_configs/prometheus.yml
           cp deployment/configs/prometheus/rules/alerts.yml temp_configs/alerts.yml
           
           # Copy to server
@@ -322,6 +322,7 @@ jobs:
           # Send email using Python
           python3 - << EOF
           import smtplib
+          import json
           from email.mime.text import MIMEText
           from email.mime.multipart import MIMEMultipart
           from datetime import datetime

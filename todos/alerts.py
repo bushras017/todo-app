@@ -83,9 +83,8 @@ class AlertManager:
         self.smtp_port = 587
         self.sender_email = os.getenv('NOTIFICATION_EMAIL')
         self.email_password = os.getenv('EMAIL_APP_PASSWORD')
-        self.recipient_emails = os.getenv('ALERT_EMAIL_RECIPIENTS', '').strip('[]').split(',')
-        emails = json.loads('${{ secrets.ALERT_EMAIL_RECIPIENTS }}')
-        self.recipient_emails = [email.strip() for email in emails]
+        self.recipient_emails = json.loads(os.getenv('ALERT_EMAIL_RECIPIENTS', ''))
+        self.recipient_emails = [email.strip() for email in self.recipient_emails]
         # Initialize BigQuery client only if project ID is available
         if self.project_id:
             try:
