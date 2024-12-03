@@ -329,7 +329,8 @@ jobs:
           # Email configuration
           sender_email = "${{ secrets.NOTIFICATION_EMAIL }}"
           password = "${{ secrets.EMAIL_APP_PASSWORD }}"
-          recipient_emails = "${{ secrets.ALERT_EMAILS }}".strip('[]').split(',')
+          recipient_emails = json.loads('${{ secrets.ALERT_EMAIL_RECIPIENTS }}')
+          recipient_emails = [email.strip() for email in recipient_emails]
           
           # Create message
           msg = MIMEMultipart()
