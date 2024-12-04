@@ -42,7 +42,7 @@ ExecStart=
 ExecStart=/usr/bin/prometheus-alertmanager \
     --config.file=/etc/alertmanager/alertmanager.yml \
     --storage.path=/var/lib/alertmanager \
-    --web.listen-address=:9093
+    --web.listen-address=0.0.0.0:9093
 User=prometheus
 Group=prometheus
 EOF
