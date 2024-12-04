@@ -3,31 +3,69 @@ set -e
 
 echo "Starting monitoring and alerting setup..."
 
-# Function to safely stop and clean up a service
+# Function to check and kill processes using specific ports
+cleanup_port() {
+    local port=$1
+    local service_name=$2
+    
+    echo "Checking port $port used by $service_name..."
+    if sudo lsof -i ":$port" >/dev/null 2>&1; then
+        echo "Port $port is in use. Terminating existing processes..."
+        sudo lsof -i ":$port" -t | xargs -r sudo kill -9
+        sleep 2
+        if sudo lsof -i ":$port" >/dev/null 2>&1; then
+            echo "ERROR: Failed to free port $port"
+            exit 1
+        fi
+        echo "Successfully freed port $port"
+    else
+        echo "Port $port is available"
+    fi
+}
+
+# Enhanced function to safely stop and clean up a service
 cleanup_service() {
     local service_name=$1
     echo "Cleaning up $service_name..."
     
-    # Stop the service gracefully first
-    sudo systemctl stop $service_name 2>/dev/null || true
+    # Check if service is active before attempting to stop
+    if sudo systemctl is-active --quiet $service_name; then
+        echo "$service_name is running, stopping it..."
+        sudo systemctl stop $service_name
+        sleep 2
+    else
+        echo "$service_name is not running"
+    fi
     
     # Check for any remaining processes and kill them
-    local process_name=${service_name#prometheus-}  # Remove 'prometheus-' prefix if present
+    local process_name=${service_name#prometheus-}
     if pgrep -f $process_name > /dev/null; then
         echo "Found remaining $process_name processes, terminating..."
         sudo pkill -f $process_name || true
-        sleep 2  # Give processes time to terminate gracefully
+        sleep 2
         
-        # Force kill if any processes remain
         if pgrep -f $process_name > /dev/null; then
             sudo pkill -9 -f $process_name || true
         fi
+    fi
+    
+    # Ensure the service is not running
+    if sudo systemctl is-active --quiet $service_name; then
+        echo "ERROR: Unable to stop $service_name"
+        exit 1
     fi
 }
 
 # Install required packages
 sudo apt-get update
 sudo apt-get install -y prometheus prometheus-node-exporter prometheus-alertmanager
+
+# Clean up ports first
+echo "Cleaning up ports..."
+cleanup_port 9090 "Prometheus"
+cleanup_port 9093 "Alertmanager"
+cleanup_port 9094 "Alertmanager cluster"
+cleanup_port 9100 "Node Exporter"
 
 # Clean up existing services
 echo "Cleaning up existing services..."
@@ -41,7 +79,11 @@ sudo mkdir -p /etc/prometheus/rules
 sudo mkdir -p /etc/alertmanager/templates
 sudo mkdir -p /var/log/prometheus
 sudo mkdir -p /var/log/alertmanager
-sudo mkdir -p /var/lib/alertmanager/data  # Added /data subdirectory
+sudo mkdir -p /var/lib/alertmanager/data
+
+# Clean up any existing data directories
+echo "Cleaning up existing data directories..."
+sudo rm -rf /var/lib/alertmanager/data/*
 
 # Copy configurations
 echo "Configuring Prometheus and Alertmanager..."
@@ -77,6 +119,7 @@ After=network-online.target
 User=prometheus
 Group=prometheus
 Type=simple
+WorkingDirectory=/var/lib/alertmanager
 ExecStart=/usr/bin/prometheus-alertmanager \
     --config.file=/etc/alertmanager/alertmanager.yml \
     --storage.path=/var/lib/alertmanager/data \
@@ -84,7 +127,7 @@ ExecStart=/usr/bin/prometheus-alertmanager \
     --cluster.listen-address=0.0.0.0:9094 \
     --log.level=debug
 
-Restart=always
+Restart=on-failure
 RestartSec=10
 
 [Install]
@@ -107,29 +150,48 @@ EOF
 echo "Starting services..."
 sudo systemctl daemon-reload
 
-# Function to start and verify a service
+# Enhanced function to start and verify a service
 start_service() {
     local service_name=$1
+    local port=$2
     echo "Starting $service_name..."
+    
+    # Double-check port availability before starting
+    cleanup_port $port $service_name
+    
+    # Ensure service is stopped and disabled before starting
+    sudo systemctl disable $service_name || true
+    sudo systemctl stop $service_name || true
+    sleep 2
+    
+    # Enable and start the service
     sudo systemctl enable $service_name
     sudo systemctl start $service_name
     
     # Wait for service to start and verify
-    sleep 3
-    if sudo systemctl is-active --quiet $service_name; then
-        echo "✓ $service_name started successfully"
-    else
-        echo "✗ $service_name failed to start. Service status:"
-        sudo systemctl status $service_name --no-pager
-        sudo journalctl -u $service_name --no-pager -n 50
-        exit 1
-    fi
+    local max_attempts=5
+    local attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        if sudo systemctl is-active --quiet $service_name; then
+            echo "✓ $service_name started successfully"
+            return 0
+        fi
+        echo "Attempt $attempt of $max_attempts: Waiting for $service_name to start..."
+        sleep 3
+        attempt=$((attempt + 1))
+    done
+    
+    echo "✗ $service_name failed to start. Service status:"
+    sudo systemctl status $service_name --no-pager
+    sudo journalctl -u $service_name --no-pager -n 50
+    exit 1
 }
 
-# Start services in sequence
-start_service prometheus
-start_service prometheus-alertmanager
-start_service prometheus-node-exporter
+# Start services in sequence with port verification
+start_service prometheus 9090
+start_service prometheus-alertmanager 9093
+start_service prometheus-node-exporter 9100
 
 echo "Setup completed successfully!"
 echo "Services are available at:"
