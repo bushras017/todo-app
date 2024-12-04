@@ -1,4 +1,3 @@
-# todos/middleware.py
 import json
 import logging
 from django.http import HttpResponseForbidden
@@ -77,11 +76,22 @@ class SecurityMonitoringMiddleware:
                 self._handle_failed_login(request)
 
     def _handle_failed_login(self, request):
-        """Handle failed login attempts - triggers error on first failure"""
+        """Handle failed login attempts and increment Prometheus metrics"""
         ip = self.get_client_ip(request)
         username = request.POST.get('username', 'unknown')
         
-        # Create and publish alert immediately on first failure
+        # First increment the counter and update rate metrics
+        failed_login_total.labels(ip=ip).inc()
+        self._track_failed_login(ip)
+        
+        # Calculate current rate for the alert
+        current_time = time.time()
+        window_size = 300  # 5 minutes
+        attempts = len([t for t in self.failed_login_window.get(ip, []) 
+                       if current_time - t < window_size])
+        current_rate = attempts / (window_size / 60)  # per minute
+        
+        # Create and publish alert
         alert = SecurityAlert(
             alert_name="FailedLoginAttempt",
             severity="critical",  
@@ -90,11 +100,10 @@ class SecurityMonitoringMiddleware:
             source_ip=ip,
             user=username,
             metrics={
-                'failed_login_rate': 1.0  # Indicate single failure
+                'failed_login_rate': current_rate
             }
         )
         alert_manager.publish_alert(alert)
-        
 
     def _track_failed_login(self, ip):
         """Track failed login attempts and update metrics"""
@@ -113,10 +122,9 @@ class SecurityMonitoringMiddleware:
         # Add current attempt
         self.failed_login_window[ip].append(current_time)
         
-        # Update metrics
+        # Update rate metric
         rate = len(self.failed_login_window[ip]) / (window_size / 60)  # per minute
         failed_login_rate.labels(ip=ip).set(rate)
-        failed_login_total.labels(ip=ip).inc()
 
     def _monitor_error_response(self, request, response):
         """Monitor and track error responses"""
