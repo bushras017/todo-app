@@ -291,7 +291,7 @@ jobs:
           
           echo "Monitoring available at: http://$WEB_IP:9090"
           echo "Alertmanager available at: http://$WEB_IP:9093"
-          
+
       - name: Run Security Scans and Send Report
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
@@ -355,7 +355,7 @@ jobs:
           password = "${{ secrets.EMAIL_APP_PASSWORD }}"
           print(sender_email, password)
           recipient_emails = '${{ secrets.ALERT_EMAILS }}'
-          recipient_emails = re.findall(r'\w+@\w+\.\w+', email_string)
+          recipient_emails = re.findall(r'\w+@\w+\.\w+', recipient_emails)
           recipient_emails = [email.strip() for email in recipient_emails]
           
           # Create message
