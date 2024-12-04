@@ -1,14 +1,33 @@
+# deployment/configs/alertmanager/alertmanager.yml
 global:
   resolve_timeout: 5m
+  smtp_from: '${NOTIFICATION_EMAIL}'
+  smtp_smarthost: 'smtp.gmail.com:587'
+  smtp_auth_username: '${NOTIFICATION_EMAIL}'
+  smtp_auth_password: '${EMAIL_APP_PASSWORD}'
+  smtp_require_tls: true
+
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
 
 route:
-  group_by: ['alertname']
-  group_wait: 10s
-  group_interval: 10s
-  repeat_interval: 1h
-  receiver: 'pubsub'
+  group_by: ['alertname', 'instance', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'email-notifications'
+  routes:
+    - match:
+        severity: critical
+      group_wait: 10s
+      repeat_interval: 30m
+      receiver: 'email-notifications'
 
 receivers:
-  - name: 'pubsub'
-    webhook_configs:
-      - url: 'http://${WEB_IP}:9095/alerts'
+  - name: 'email-notifications'
+    email_configs:
+      - to: '${EMAIL_RECIPIENTS_FORMATTED}'
+        send_resolved: true
+        html: '{{ template "email.default.html" . }}'
+        headers:
+          subject: '{{ template "email.default.subject" . }}'

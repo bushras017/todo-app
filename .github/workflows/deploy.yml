@@ -252,22 +252,38 @@ jobs:
       - name: Setup Monitoring
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
-          # Get Web IP
+          # Get Web IP and export it for envsubst
           WEB_IP=$(terraform -chdir=terraform output -raw web_server_public_ip)
+          export WEB_IP
+          export NOTIFICATION_EMAIL="${{ secrets.NOTIFICATION_EMAIL }}"
+          export EMAIL_APP_PASSWORD="${{ secrets.EMAIL_APP_PASSWORD }}"
           
-          # Process config files
-          mkdir -p temp_configs
-          envsubst < deployment/configs/prometheus/prometheus.yml > temp_configs/prometheus.yml
+          # Process the JSON array of email recipients into comma-separated string
+          EMAIL_RECIPIENTS_FORMATTED=$(echo ${{ secrets.ALERT_EMAILS }} | jq -r 'join(",")')
+          export EMAIL_RECIPIENTS_FORMATTED
+          
+          # Debug output (optional)
+          echo "Formatted email recipients: $EMAIL_RECIPIENTS_FORMATTED"
+          
+          # Create temp directory for processed configs
+          mkdir -p temp_configs/alertmanager/templates
+          
+          # Process configuration files with environment variables
+          envsubst '$WEB_IP' < deployment/configs/prometheus/prometheus.yml > temp_configs/prometheus.yml
+          envsubst '$NOTIFICATION_EMAIL,$EMAIL_APP_PASSWORD,$EMAIL_RECIPIENTS_FORMATTED' < deployment/configs/alertmanager/alertmanager.yml > temp_configs/alertmanager.yml
           cp deployment/configs/prometheus/rules/alerts.yml temp_configs/alerts.yml
+          cp deployment/configs/alertmanager/templates/email.tmpl temp_configs/alertmanager/templates/email.tmpl
           
           # Copy to server
           gcloud compute scp temp_configs/* web-server:/tmp/ --zone=${{ env.ZONE }}
+          gcloud compute scp temp_configs/alertmanager/templates/email.tmpl web-server:/tmp/ --zone=${{ env.ZONE }}
           gcloud compute scp deployment/scripts/setup-monitoring.sh web-server:/tmp/ --zone=${{ env.ZONE }}
           
           # Run setup
           gcloud compute ssh web-server --zone=${{ env.ZONE }} -- "bash /tmp/setup-monitoring.sh"
           
           echo "Monitoring available at: http://$WEB_IP:9090"
+          echo "Alertmanager available at: http://$WEB_IP:9093"
 
       - name: Run Security Scans and Send Report
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -322,7 +338,7 @@ jobs:
           # Send email using Python
           python3 - << EOF
           import smtplib
-          import json
+          import re
           from email.mime.text import MIMEText
           from email.mime.multipart import MIMEMultipart
           from datetime import datetime
@@ -330,7 +346,9 @@ jobs:
           # Email configuration
           sender_email = "${{ secrets.NOTIFICATION_EMAIL }}"
           password = "${{ secrets.EMAIL_APP_PASSWORD }}"
-          recipient_emails = json.loads('${{ secrets.ALERT_EMAIL_RECIPIENTS }}')
+          print(sender_email, password)
+          recipient_emails = '${{ secrets.ALERT_EMAILS }}'
+          recipient_emails = re.findall(r'\w+@\w+\.\w+', email_string)
           recipient_emails = [email.strip() for email in recipient_emails]
           
           # Create message

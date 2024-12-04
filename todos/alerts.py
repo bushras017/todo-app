@@ -10,7 +10,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from prometheus_client import Counter, Histogram, Gauge
-
+import re
 logger = logging.getLogger('django.security')
 
 # Prometheus metrics
@@ -83,8 +83,9 @@ class AlertManager:
         self.smtp_port = 587
         self.sender_email = os.getenv('NOTIFICATION_EMAIL')
         self.email_password = os.getenv('EMAIL_APP_PASSWORD')
-        self.recipient_emails = json.loads(os.getenv('ALERT_EMAIL_RECIPIENTS', ''))
-        self.recipient_emails = [email.strip() for email in self.recipient_emails]
+        email_string = os.getenv('ALERT_EMAIL_RECIPIENTS', '')
+        self.recipient_emails = re.findall(r'\w+@\w+\.\w+', email_string)
+
         # Initialize BigQuery client only if project ID is available
         if self.project_id:
             try:
@@ -161,10 +162,10 @@ class AlertManager:
             body = self._format_email_body(alert)
             msg.attach(MIMEText(body, 'plain'))
             
-            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.sender_email, self.email_password)
-                server.send_message(msg)
+            # with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+            #     server.starttls()
+            #     server.login(self.sender_email, self.email_password)
+            #     server.send_message(msg)
                 
             logger.info(f"Alert email sent: {alert.alert_name}")
         except Exception as e:

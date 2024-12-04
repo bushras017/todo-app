@@ -1,0 +1,41 @@
+# deployment/configs/alertmanager/templates/email.tmpl
+{{ define "email.default.subject" }}
+[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .GroupLabels.SortedPairs.Values | join " " }} {{ if gt (len .CommonLabels) (len .GroupLabels) }}({{ with .CommonLabels.Remove .GroupLabels.Names }}{{ .Values | join " " }}{{ end }}){{ end }}
+{{ end }}
+
+{{ define "email.default.html" }}
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>{{ template "email.default.subject" . }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 20px; color: #333; }
+    .alert { margin: 20px 0; padding: 15px; border-radius: 4px; }
+    .critical { background: #ffe6e6; border-left: 5px solid #cc0000; }
+    .warning { background: #fff3e6; border-left: 5px solid #ff9900; }
+    .info { background: #e6f3ff; border-left: 5px solid #0066cc; }
+    .resolved { background: #e6ffe6; border-left: 5px solid #00cc00; }
+    .details { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h2>{{ .Alerts | len }} Alert{{ if gt (len .Alerts) 1 }}s{{ end }} {{ .Status | toUpper }}</h2>
+  
+  {{ range .Alerts }}
+  <div class="alert {{ .Labels.severity }}">
+    <h3>{{ .Labels.alertname }}</h3>
+    <div class="details">
+      <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+      <p><strong>Instance:</strong> {{ .Labels.instance }}</p>
+      <p><strong>Severity:</strong> {{ .Labels.severity }}</p>
+      <p><strong>Started:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05 MST" }}</p>
+      {{ if .EndsAt.After .StartsAt }}
+      <p><strong>Ended:</strong> {{ .EndsAt.Format "2006-01-02 15:04:05 MST" }}</p>
+      {{ end }}
+    </div>
+  </div>
+  {{ end }}
+</body>
+</html>
+{{ end }}

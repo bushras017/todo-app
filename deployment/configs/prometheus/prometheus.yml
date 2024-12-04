@@ -1,9 +1,17 @@
+# deployment/configs/prometheus/prometheus.yml
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  external_labels:
+    monitor: 'django-monitor'
 
 rule_files:
   - rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['localhost:9093']
 
 scrape_configs:
   - job_name: 'django'
