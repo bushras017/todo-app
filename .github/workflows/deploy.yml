@@ -262,33 +262,36 @@ jobs:
           export NOTIFICATION_EMAIL="${{ secrets.NOTIFICATION_EMAIL }}"
           export EMAIL_APP_PASSWORD="${{ secrets.EMAIL_APP_PASSWORD }}"
           
-          # Extract and format email addresses using Python with regex
+          # Extract email addresses
           EMAIL_RECIPIENTS_FORMATTED=$(echo "${{ secrets.ALERT_EMAILS }}" | grep -oE '\w+@\w+\.\w+' | paste -sd "," -)
           export EMAIL_RECIPIENTS_FORMATTED
           
-          # Debug output (optional)
           echo "Formatted email recipients: $EMAIL_RECIPIENTS_FORMATTED"
           
-          # Create temp directory for processed configs
+          # Create temp directories
           mkdir -p temp_configs/alertmanager/templates
           
-          # Process configuration files with environment variables
+          # Process configuration files
           envsubst '$WEB_IP' < deployment/configs/prometheus/prometheus.yml > temp_configs/prometheus.yml
           envsubst '$NOTIFICATION_EMAIL,$EMAIL_APP_PASSWORD,$EMAIL_RECIPIENTS_FORMATTED' < deployment/configs/alertmanager/alertmanager.yml > temp_configs/alertmanager.yml
           cp deployment/configs/prometheus/rules/alerts.yml temp_configs/alerts.yml
           cp deployment/configs/alertmanager/templates/email.tmpl temp_configs/alertmanager/templates/email.tmpl
           
-          # Copy to server
-          gcloud compute scp temp_configs/* web-server:/tmp/ --zone=${{ env.ZONE }}
-          gcloud compute scp temp_configs/alertmanager/templates/email.tmpl web-server:/tmp/ --zone=${{ env.ZONE }}
-          gcloud compute scp deployment/scripts/setup-monitoring.sh web-server:/tmp/ --zone=${{ env.ZONE }}
+          # Copy files to server with correct paths
+          echo "Copying configuration files to server..."
+          gcloud compute scp temp_configs/prometheus.yml web-server:/tmp/prometheus.yml --zone=${{ env.ZONE }}
+          gcloud compute scp temp_configs/alertmanager.yml web-server:/tmp/alertmanager.yml --zone=${{ env.ZONE }}
+          gcloud compute scp temp_configs/alerts.yml web-server:/tmp/alerts.yml --zone=${{ env.ZONE }}
+          gcloud compute scp temp_configs/alertmanager/templates/email.tmpl web-server:/tmp/email.tmpl --zone=${{ env.ZONE }}
+          gcloud compute scp deployment/scripts/setup-monitoring.sh web-server:/tmp/setup-monitoring.sh --zone=${{ env.ZONE }}
           
           # Run setup
+          echo "Running monitoring setup..."
           gcloud compute ssh web-server --zone=${{ env.ZONE }} -- "bash /tmp/setup-monitoring.sh"
           
           echo "Monitoring available at: http://$WEB_IP:9090"
           echo "Alertmanager available at: http://$WEB_IP:9093"
-
+          
       - name: Run Security Scans and Send Report
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
