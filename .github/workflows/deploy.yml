@@ -116,6 +116,10 @@ jobs:
           echo "Importing BigQuery dataset..."
           terraform import google_bigquery_dataset.security_logs \
             "${{ secrets.GCP_PROJECT_ID }}:security_logs" || true
+
+          echo "Importing BigQuery alerts table..."
+          terraform import google_bigquery_table.alerts \
+            "${{ secrets.GCP_PROJECT_ID }}/security_logs/alerts" || true
           
           echo "Importing Pub/Sub topic..."
           terraform import google_pubsub_topic.prometheus_alerts \
@@ -258,8 +262,8 @@ jobs:
           export NOTIFICATION_EMAIL="${{ secrets.NOTIFICATION_EMAIL }}"
           export EMAIL_APP_PASSWORD="${{ secrets.EMAIL_APP_PASSWORD }}"
           
-          # Process the JSON array of email recipients into comma-separated string
-          EMAIL_RECIPIENTS_FORMATTED=$(echo ${{ secrets.ALERT_EMAILS }} | jq -r 'join(",")')
+          # Extract and format email addresses using Python with regex
+          EMAIL_RECIPIENTS_FORMATTED=$(echo "${{ secrets.ALERT_EMAILS }}" | grep -oE '\w+@\w+\.\w+' | paste -sd "," -)
           export EMAIL_RECIPIENTS_FORMATTED
           
           # Debug output (optional)
