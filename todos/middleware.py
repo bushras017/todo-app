@@ -90,7 +90,7 @@ class SecurityMonitoringMiddleware:
             source_ip=ip,
             user=username,
             metrics={
-                'failed_login_rate': 3.0  # Indicate single failure
+                'failed_login_rate': 1.0  # Indicate single failure
             }
         )
         alert_manager.publish_alert(alert)

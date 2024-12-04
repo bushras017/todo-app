@@ -85,16 +85,16 @@ class AlertManager:
         self.email_password = os.getenv('EMAIL_APP_PASSWORD')
         email_string = os.getenv('ALERT_EMAIL_RECIPIENTS', '')
         self.recipient_emails = re.findall(r'\w+@\w+\.\w+', email_string)
-
+        self.bigquery_client = None
         # Initialize BigQuery client only if project ID is available
-        if self.project_id:
-            try:
-                self.bigquery_client = bigquery.Client()
-                self.table_id = f"{self.project_id}.security_logs.alerts"
-            except Exception as e:
-                logger.error(f"Failed to initialize BigQuery client: {str(e)}")
-                self.bigquery_client = None
-                self.table_id = None
+        # if self.project_id:
+        #     try:
+        #         self.bigquery_client = bigquery.Client()
+        #         self.table_id = f"{self.project_id}.security_logs.alerts"
+        #     except Exception as e:
+        #         logger.error(f"Failed to initialize BigQuery client: {str(e)}")
+        #         self.bigquery_client = None
+        #         self.table_id = None
 
     def publish_alert(self, alert: SecurityAlert):
         """Publish alert to all configured channels"""
@@ -106,12 +106,12 @@ class AlertManager:
             self._log_alert(alert_data)
             
             # Publish to Pub/Sub if available
-            if self.publisher and self.topic_path:
-                self._publish_to_pubsub(alert_data)
+            # if self.publisher and self.topic_path:
+            #     self._publish_to_pubsub(alert_data)
             
-            # Store in BigQuery if available
-            if self.bigquery_client and self.table_id:
-                self._store_in_bigquery(alert_data)
+            # # Store in BigQuery if available
+            # if self.bigquery_client and self.table_id:
+            #     self._store_in_bigquery(alert_data)
             
             # Send email for high-severity alerts
             if alert.severity.lower() in ['critical', 'high', 'error']:
